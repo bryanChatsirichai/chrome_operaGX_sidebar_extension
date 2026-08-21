@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "GX Sidebar",
+  "version": "0.1.0",
+  "description": "Opera GX-style sidebar for Chrome — pin web apps and open them beside your page.",
+  "permissions": ["storage", "scripting", "tabs", "windows", "system.display"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "src/background.ts",
+    "type": "module"
+  },
+  "options_ui": {
+    "page": "src/popup/popup.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Toggle GX Sidebar",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/sidebar.ts"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/apps/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

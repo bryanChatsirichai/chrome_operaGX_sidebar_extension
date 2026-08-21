@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GX Sidebar Settings</title>
+</head>
+<body>
+  <div class="popup-container">
+    <header class="popup-header">
+      <h1>GX Sidebar</h1>
+      <p class="subtitle">Manage pinned apps and panel settings</p>
+    </header>
+
+    <section class="section">
+      <h2>Panel width</h2>
+      <div class="width-control">
+        <input type="range" id="panelWidth" min="300" max="600" step="10" value="400">
+        <span id="panelWidthValue">400px</span>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Companion window</h2>
+      <p class="hint">Popup used when a site cannot load in the panel.</p>
+      <label class="field-label" for="companionWidth">Width</label>
+      <div class="width-control">
+        <input type="range" id="companionWidth" min="300" max="900" step="10" value="400">
+        <span id="companionWidthValue">400px</span>
+      </div>
+      <label class="field-label" for="companionHeightMode">Height</label>
+      <select id="companionHeightMode" class="field-select">
+        <option value="match">Match browser window</option>
+        <option value="fixed">Fixed height</option>
+      </select>
+      <div id="companionHeightRow" class="companion-height-row">
+        <div class="width-control">
+          <input type="range" id="companionHeight" min="400" max="1200" step="10" value="800">
+          <span id="companionHeightValue">800px</span>
+        </div>
+      </div>
+      <label class="field-label" for="companionPosition">Initial position</label>
+      <select id="companionPosition" class="field-select">
+        <option value="right">Right of browser window</option>
+        <option value="left">Left of browser window</option>
+        <option value="screen-right">Right edge of screen</option>
+        <option value="screen-left">Left edge of screen</option>
+      </select>
+    </section>
+
+    <section class="section">
+      <div class="section-header">
+        <h2>Pinned apps</h2>
+        <span class="hint">Drag to reorder</span>
+      </div>
+      <ul id="pinsList" class="pins-list"></ul>
+    </section>
+
+    <section class="section">
+      <h2>Add custom app</h2>
+      <form id="addPinForm" class="add-form">
+        <input type="text" id="pinName" placeholder="App name" required maxlength="32">
+        <input type="url" id="pinUrl" placeholder="https://example.com" required>
+        <input type="url" id="pinIconUrl" placeholder="Icon URL (optional)">
+        <button type="submit" class="btn btn-primary">Add pin</button>
+      </form>
+    </section>
+
+    <footer class="popup-footer">
+      <button id="resetBtn" type="button" class="btn btn-secondary">Reset to defaults</button>
+    </footer>
+  </div>
+
+  <script type="module" src="./popup.ts"></script>
+</body>
+</html>

@@ -1,0 +1,290 @@
+$gx-accent: #ff0040;
+$gx-accent-hover: #e0003a;
+$gx-bg-dark: #111;
+$gx-bg-panel: #1a1a1a;
+$gx-border: #2a2a2a;
+$gx-border-hover: #444;
+$gx-text-muted: #888;
+$gx-text-dim: #666;
+$gx-text-light: #aaa;
+$gx-text-white: #fff;
+
+:global {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: $gx-bg-dark;
+    color: #eee;
+    min-width: 360px;
+  }
+
+  .popup-container {
+    padding: 20px;
+    max-width: 480px;
+    margin: 0 auto;
+  }
+
+  .popup-header {
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid $gx-border;
+  }
+
+  .popup-header h1 {
+    font-size: 20px;
+    font-weight: 700;
+    color: $gx-text-white;
+  }
+
+  .subtitle {
+    font-size: 13px;
+    color: $gx-text-muted;
+    margin-top: 4px;
+  }
+
+  .section {
+    margin-bottom: 24px;
+  }
+
+  .section h2 {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: $gx-text-muted;
+    margin-bottom: 10px;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+
+  .section-header h2 {
+    margin-bottom: 0;
+  }
+
+  .hint {
+    font-size: 11px;
+    color: $gx-text-dim;
+  }
+
+  .width-control {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .width-control input[type='range'] {
+    flex: 1;
+    accent-color: $gx-accent;
+  }
+
+  #panelWidthValue,
+  #companionWidthValue,
+  #companionHeightValue {
+    font-size: 13px;
+    color: $gx-text-light;
+    min-width: 48px;
+    text-align: right;
+  }
+
+  .field-label {
+    display: block;
+    font-size: 12px;
+    color: #ccc;
+    margin: 12px 0 6px;
+  }
+
+  .field-select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #333;
+    border-radius: 6px;
+    background: $gx-bg-panel;
+    color: #eee;
+    font-size: 13px;
+  }
+
+  .companion-height-row.hidden {
+    display: none;
+  }
+
+  .pins-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .pin-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: $gx-bg-panel;
+    border: 1px solid $gx-border;
+    border-radius: 8px;
+    cursor: grab;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .pin-item:hover {
+    border-color: $gx-border-hover;
+  }
+
+  .pin-item.dragging {
+    opacity: 0.5;
+    cursor: grabbing;
+  }
+
+  .pin-item.drag-over {
+    border-color: $gx-accent;
+  }
+
+  .pin-drag-handle {
+    color: #555;
+    font-size: 14px;
+    user-select: none;
+  }
+
+  .pin-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    object-fit: contain;
+    flex-shrink: 0;
+  }
+
+  .pin-icon-fallback {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: $gx-border;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .pin-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .pin-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: $gx-text-white;
+  }
+
+  .pin-url {
+    font-size: 11px;
+    color: $gx-text-dim;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .pin-delete {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: $gx-text-dim;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, color 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .pin-delete:hover {
+    background: #331111;
+    color: $gx-accent;
+  }
+
+  .add-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .add-form input {
+    padding: 10px 12px;
+    border: 1px solid $gx-border;
+    border-radius: 8px;
+    background: $gx-bg-panel;
+    color: $gx-text-white;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .add-form input:focus {
+    border-color: $gx-accent;
+  }
+
+  .add-form input::placeholder {
+    color: #555;
+  }
+
+  .btn {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.1s ease;
+  }
+
+  .btn:active {
+    transform: scale(0.98);
+  }
+
+  .btn-primary {
+    background: $gx-accent;
+    color: $gx-text-white;
+  }
+
+  .btn-primary:hover {
+    background: $gx-accent-hover;
+  }
+
+  .btn-secondary {
+    background: $gx-border;
+    color: $gx-text-light;
+  }
+
+  .btn-secondary:hover {
+    background: #333;
+    color: $gx-text-white;
+  }
+
+  .popup-footer {
+    padding-top: 16px;
+    border-top: 1px solid $gx-border;
+  }
+
+  .empty-state {
+    padding: 16px;
+    text-align: center;
+    color: $gx-text-dim;
+    font-size: 13px;
+    background: $gx-bg-panel;
+    border-radius: 8px;
+    border: 1px dashed $gx-border;
+  }
+}

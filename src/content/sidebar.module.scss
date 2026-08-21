@@ -1,0 +1,639 @@
+$gx-accent: #ff0040;
+$gx-accent-hover: #e0003a;
+$gx-bg-dark: #111111;
+$gx-bg-panel: #1a1a1a;
+$gx-border: #2a2a2a;
+$gx-border-hover: #444;
+$gx-text-muted: #888;
+$gx-text-dim: #666;
+$gx-text-light: #aaa;
+$gx-text-white: #fff;
+
+:global {
+  :host {
+    all: initial;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  .sidebar-root {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    z-index: 2147483647;
+    display: flex;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    pointer-events: none;
+  }
+
+  .sidebar-root.hidden {
+    display: none;
+  }
+
+  .sidebar-root > * {
+    pointer-events: auto;
+  }
+
+  .icon-strip {
+    width: var(--gx-strip-width, 48px);
+    min-width: var(--gx-strip-width, 48px);
+    height: 100%;
+    background: $gx-bg-dark;
+    border-right: 1px solid $gx-border;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 0;
+    gap: 4px;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .icon-strip::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .icon-strip::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 2px;
+  }
+
+  .pin-button {
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    position: relative;
+    transition: background 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .pin-button:hover {
+    background: $gx-border;
+  }
+
+  .pin-button.active {
+    background: $gx-border;
+  }
+
+  .pin-button.active::before {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 20px;
+    background: $gx-accent;
+    border-radius: 0 2px 2px 0;
+    box-shadow: 0 0 8px rgba(255, 0, 64, 0.5);
+  }
+
+  .pin-button img {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+  }
+
+  .pin-button .pin-fallback {
+    color: $gx-text-white;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .strip-spacer {
+    flex: 1;
+  }
+
+  .strip-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-bottom: 4px;
+  }
+
+  .settings-button {
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+    color: $gx-text-muted;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, color 0.15s ease;
+    position: relative;
+  }
+
+  .settings-button:hover {
+    background: $gx-border;
+    color: $gx-text-white;
+  }
+
+  .settings-button svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .settings-button.active {
+    background: $gx-border;
+    color: $gx-text-white;
+  }
+
+  .settings-button.active::before {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 20px;
+    background: $gx-accent;
+    border-radius: 0 2px 2px 0;
+    box-shadow: 0 0 8px rgba(255, 0, 64, 0.5);
+  }
+
+  .app-panel {
+    width: 0;
+    overflow: hidden;
+    height: 100%;
+    background: $gx-bg-panel;
+    border-right: 1px solid $gx-border;
+    display: flex;
+    flex-direction: column;
+    transition: width 0.2s ease;
+  }
+
+  .app-panel.open {
+    width: var(--gx-panel-width, 400px);
+  }
+
+  .settings-panel {
+    width: 0;
+    overflow: hidden;
+    height: 100%;
+    background: $gx-bg-panel;
+    border-right: 1px solid $gx-border;
+    display: flex;
+    flex-direction: column;
+    transition: width 0.2s ease;
+  }
+
+  .settings-panel.open {
+    width: var(--gx-panel-width, 400px);
+  }
+
+  .settings-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .settings-body::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .settings-body::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 2px;
+  }
+
+  .settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .settings-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .settings-section-header .settings-heading {
+    margin: 0;
+  }
+
+  .settings-section-header .settings-hint {
+    margin: 0;
+    white-space: nowrap;
+  }
+
+  .settings-heading {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: $gx-text-muted;
+  }
+
+  .settings-add-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .settings-input {
+    padding: 10px 12px;
+    border: 1px solid $gx-border;
+    border-radius: 8px;
+    background: #111;
+    color: $gx-text-white;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .settings-input:focus {
+    border-color: $gx-accent;
+  }
+
+  .settings-input::placeholder {
+    color: #555;
+  }
+
+  .settings-hint {
+    margin: 0;
+    font-size: 11px;
+    color: $gx-text-dim;
+    line-height: 1.4;
+  }
+
+  .settings-btn {
+    padding: 10px 14px;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.1s ease;
+  }
+
+  .settings-btn:active {
+    transform: scale(0.98);
+  }
+
+  .settings-btn-primary {
+    background: $gx-accent;
+    color: $gx-text-white;
+  }
+
+  .settings-btn-primary:hover {
+    background: $gx-accent-hover;
+  }
+
+  .settings-btn-secondary {
+    background: $gx-border;
+    color: $gx-text-light;
+  }
+
+  .settings-btn-secondary:hover {
+    background: #333;
+    color: $gx-text-white;
+  }
+
+  .settings-pins-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .settings-empty {
+    padding: 12px;
+    text-align: center;
+    color: $gx-text-dim;
+    font-size: 12px;
+    background: #111;
+    border: 1px dashed $gx-border;
+    border-radius: 8px;
+  }
+
+  .settings-pin-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    background: #111;
+    border: 1px solid $gx-border;
+    border-radius: 8px;
+    cursor: grab;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  .settings-pin-item:hover {
+    border-color: $gx-border-hover;
+  }
+
+  .settings-pin-item.dragging {
+    opacity: 0.5;
+    cursor: grabbing;
+  }
+
+  .settings-pin-item.drag-over {
+    border-color: $gx-accent;
+  }
+
+  .settings-pin-drag-handle {
+    color: #555;
+    font-size: 14px;
+    user-select: none;
+    flex-shrink: 0;
+    cursor: grab;
+  }
+
+  .settings-pin-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    object-fit: contain;
+    flex-shrink: 0;
+  }
+
+  .settings-pin-icon-fallback {
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: $gx-border;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: $gx-text-white;
+    flex-shrink: 0;
+  }
+
+  .settings-pin-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .settings-pin-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: $gx-text-white;
+  }
+
+  .settings-pin-url {
+    font-size: 11px;
+    color: $gx-text-dim;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .settings-pin-delete {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: $gx-text-dim;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .settings-pin-delete:hover {
+    background: #331111;
+    color: $gx-accent;
+  }
+
+  .settings-width-control {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .settings-width-range,
+  .settings-companion-width-range,
+  .settings-companion-height-range {
+    flex: 1;
+    accent-color: $gx-accent;
+  }
+
+  .settings-width-value,
+  .settings-companion-width-value,
+  .settings-companion-height-value {
+    font-size: 12px;
+    color: $gx-text-light;
+    min-width: 44px;
+    text-align: right;
+  }
+
+  .settings-label {
+    font-size: 12px;
+    color: #ccc;
+    margin-top: 4px;
+  }
+
+  .settings-select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #333;
+    border-radius: 6px;
+    background: $gx-bg-panel;
+    color: #eee;
+    font-size: 12px;
+  }
+
+  .settings-companion-height-row.hidden {
+    display: none;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: $gx-bg-dark;
+    border-bottom: 1px solid $gx-border;
+    min-height: 44px;
+  }
+
+  .panel-title {
+    color: $gx-text-white;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .panel-actions {
+    display: flex;
+    gap: 4px;
+  }
+
+  .panel-action-btn {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: $gx-text-muted;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .panel-action-btn:hover {
+    background: $gx-border;
+    color: $gx-text-white;
+  }
+
+  .panel-action-btn svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .panel-body {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .panel-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: #fff;
+  }
+
+  .panel-iframe.hidden {
+    display: none;
+  }
+
+  .fallback-view {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding: 24px;
+    text-align: center;
+    gap: 12px;
+  }
+
+  .fallback-view.visible {
+    display: flex;
+  }
+
+  .fallback-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    background: $gx-border;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .fallback-icon img {
+    width: 28px;
+    height: 28px;
+  }
+
+  .fallback-title {
+    color: $gx-text-white;
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .fallback-message {
+    color: $gx-text-muted;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 0;
+    max-width: 280px;
+  }
+
+  .open-tab-btn {
+    margin-top: 8px;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    background: $gx-accent;
+    color: $gx-text-white;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.1s ease;
+  }
+
+  .open-tab-btn:hover {
+    background: $gx-accent-hover;
+  }
+
+  .open-tab-btn:active {
+    transform: scale(0.98);
+  }
+
+  .resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 4px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.15s ease;
+  }
+
+  .resize-handle:hover,
+  .resize-handle.dragging {
+    background: $gx-accent;
+  }
+
+  .loading-view {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: $gx-bg-panel;
+    color: $gx-text-muted;
+    font-size: 13px;
+  }
+
+  .loading-view.visible {
+    display: flex;
+  }
+
+  .loading-spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid #333;
+    border-top-color: $gx-accent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 10px;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+}
