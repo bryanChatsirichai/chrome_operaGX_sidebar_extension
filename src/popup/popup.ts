@@ -23,6 +23,9 @@ interface PopupElements {
   companionPositionInput: HTMLSelectElement;
   companionHeightRow: HTMLElement;
   addPinForm: HTMLFormElement;
+  pinFormHeading: HTMLElement;
+  pinFormSubmit: HTMLButtonElement;
+  pinFormCancel: HTMLButtonElement;
   resetBtn: HTMLButtonElement;
   pinsList: HTMLUListElement;
 }
@@ -30,6 +33,7 @@ interface PopupElements {
 let pins: Pin[] = [];
 let settings: Settings = { ...GX_DEFAULTS.DEFAULT_SETTINGS };
 let draggedIndex: number | null = null;
+let editingPinId: string | null = null;
 let elements: PopupElements;
 
 document.addEventListener('DOMContentLoaded', init);
@@ -55,6 +59,9 @@ function cacheElements(): void {
     companionPositionInput: byId('companionPosition'),
     companionHeightRow: byId('companionHeightRow'),
     addPinForm: byId('addPinForm'),
+    pinFormHeading: byId('pinFormHeading'),
+    pinFormSubmit: byId('pinFormSubmit'),
+    pinFormCancel: byId('pinFormCancel'),
     resetBtn: byId('resetBtn'),
     pinsList: byId('pinsList')
   };
@@ -123,7 +130,11 @@ function bindEvents(): void {
 
   addPinForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    void addPin();
+    void savePin();
+  });
+
+  elements.pinFormCancel.addEventListener('click', () => {
+    resetPinForm();
   });
 
   resetBtn.addEventListener('click', () => {
@@ -140,6 +151,7 @@ async function resetToDefaults(): Promise<void> {
   if (response.ok) {
     pins = response.data.pins;
     settings = response.data.settings;
+    resetPinForm();
     renderPinsList();
     updateSettingsControls();
   }
@@ -196,6 +208,7 @@ function renderPinsList(): void {
   pins.forEach((pin, index) => {
     const li = document.createElement('li');
     li.className = 'pin-item';
+    li.classList.toggle('editing', editingPinId === pin.id);
     li.draggable = true;
     li.dataset.index = String(index);
 
@@ -210,7 +223,10 @@ function renderPinsList(): void {
         <div class="pin-name">${escapeHtml(pin.name)}</div>
         <div class="pin-url">${escapeHtml(pin.url)}</div>
       </div>
-      <button class="pin-delete" type="button" title="Remove pin">✕</button>
+      <div class="pin-actions">
+        <button class="pin-edit" type="button" title="Edit pin">✎</button>
+        <button class="pin-delete" type="button" title="Remove pin">✕</button>
+      </div>
     `;
 
     li.addEventListener('dragstart', () => {
@@ -252,7 +268,15 @@ function renderPinsList(): void {
       void saveAndBroadcast();
     });
 
+    li.querySelector('.pin-edit')!.addEventListener('click', () => {
+      beginEditPin(pin);
+    });
+
     li.querySelector('.pin-delete')!.addEventListener('click', () => {
+      if (editingPinId === pin.id) {
+        resetPinForm();
+      }
+
       pins.splice(index, 1);
       pins.forEach((entry, entryIndex) => {
         entry.order = entryIndex;
@@ -265,7 +289,29 @@ function renderPinsList(): void {
   });
 }
 
-async function addPin(): Promise<void> {
+function resetPinForm(): void {
+  editingPinId = null;
+  elements.addPinForm.reset();
+  elements.pinFormHeading.textContent = 'Add custom app';
+  elements.pinFormSubmit.textContent = 'Add pin';
+  elements.pinFormCancel.classList.add('hidden');
+  renderPinsList();
+}
+
+function beginEditPin(pin: Pin): void {
+  editingPinId = pin.id;
+  elements.pinFormHeading.textContent = 'Edit app';
+  elements.pinFormSubmit.textContent = 'Save changes';
+  elements.pinFormCancel.classList.remove('hidden');
+  byId<HTMLInputElement>('pinName').value = pin.name;
+  byId<HTMLInputElement>('pinUrl').value = pin.url;
+  byId<HTMLInputElement>('pinIconUrl').value = pin.iconUrl;
+  byId<HTMLInputElement>('pinName').focus();
+  renderPinsList();
+  elements.addPinForm.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+async function savePin(): Promise<void> {
   const name = byId<HTMLInputElement>('pinName').value.trim();
   const url = byId<HTMLInputElement>('pinUrl').value.trim();
   const iconUrl = byId<HTMLInputElement>('pinIconUrl').value.trim();
@@ -282,15 +328,27 @@ async function addPin(): Promise<void> {
     return;
   }
 
-  pins.push({
-    id: `custom-${Date.now()}`,
-    name,
-    url: parsedUrl.href,
-    iconUrl: iconUrl || '',
-    order: pins.length
-  });
+  if (editingPinId) {
+    const pin = pins.find((entry) => entry.id === editingPinId);
+    if (!pin) {
+      resetPinForm();
+      return;
+    }
 
-  elements.addPinForm.reset();
+    pin.name = name;
+    pin.url = parsedUrl.href;
+    pin.iconUrl = iconUrl || '';
+  } else {
+    pins.push({
+      id: `custom-${Date.now()}`,
+      name,
+      url: parsedUrl.href,
+      iconUrl: iconUrl || '',
+      order: pins.length
+    });
+  }
+
+  resetPinForm();
   renderPinsList();
   await saveAndBroadcast();
 }

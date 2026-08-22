@@ -149,6 +149,11 @@ $gx-text-white: #fff;
     border-color: $gx-accent;
   }
 
+  .pin-item.editing {
+    border-color: $gx-accent;
+    background: #1a1014;
+  }
+
   .pin-drag-handle {
     color: #555;
     font-size: 14px;
@@ -210,6 +215,32 @@ $gx-text-white: #fff;
     flex-shrink: 0;
   }
 
+  .pin-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .pin-edit {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: $gx-text-dim;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, color 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .pin-edit:hover {
+    background: #1a1a33;
+    color: #88aaff;
+  }
+
   .pin-delete:hover {
     background: #331111;
     color: $gx-accent;
@@ -219,6 +250,19 @@ $gx-text-white: #fff;
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .form-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .form-actions .btn {
+    flex: 1;
+  }
+
+  .form-actions .hidden {
+    display: none;
   }
 
   .add-form input {

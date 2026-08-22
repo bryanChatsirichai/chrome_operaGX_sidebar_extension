@@ -75,7 +75,11 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
   let settingsCompanionHeightValueEl!: HTMLElement;
   let settingsCompanionPositionEl!: HTMLSelectElement;
   let settingsButtonEl: HTMLButtonElement | null = null;
+  let settingsFormHeadingEl!: HTMLElement;
+  let settingsFormSubmitBtnEl!: HTMLButtonElement;
+  let settingsFormCancelBtnEl!: HTMLButtonElement;
   let settingsDraggedIndex: number | null = null;
+  let editingPinId: string | null = null;
 
   // Iframe embed detection state.
   let iframeVerifyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -83,9 +87,42 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
   let embedFailureHandled = false;
   let embedFailureInFlight: Promise<CompanionOpenResult | undefined> | null = null;
 
+  registerSidebarKeyboardIsolation();
+
   bootstrap();
 
   // --- Bootstrap ---
+
+  /**
+   * Stops host-page shortcut handlers from swallowing keystrokes in sidebar form fields.
+   * Shadow DOM retargeting makes event.target the host element, so pages treat focused
+   * inputs as non-editable and intercept keys like "p".
+   */
+  function registerSidebarKeyboardIsolation(): void {
+    const isEditableTarget = (target: EventTarget | null): boolean =>
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement;
+
+    const stopIfSidebarField = (event: KeyboardEvent): void => {
+      if (!hostEl || !event.composedPath().includes(hostEl)) {
+        return;
+      }
+      if (isEditableTarget(event.composedPath()[0])) {
+        event.stopImmediatePropagation();
+      }
+    };
+
+    document.addEventListener('keydown', stopIfSidebarField, true);
+    document.addEventListener('keyup', stopIfSidebarField, true);
+  }
+
+  /** Prevents keyboard events from bubbling out of the shadow host to the page. */
+  function attachHostKeyboardBubbleStop(host: HTMLDivElement): void {
+    const stopBubble = (event: Event): void => event.stopPropagation();
+    host.addEventListener('keydown', stopBubble);
+    host.addEventListener('keyup', stopBubble);
+  }
 
   /** Injects CSS that shifts page content to make room for the sidebar strip/panel. */
   function injectPageShiftStyles(): void {
@@ -154,6 +191,7 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
     hostEl = document.createElement('div');
     hostEl.id = 'gx-sidebar-host';
     document.documentElement.appendChild(hostEl);
+    attachHostKeyboardBubbleStop(hostEl);
 
     shadowRoot = hostEl.attachShadow({ mode: 'closed' });
 
@@ -211,13 +249,16 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
         </header>
         <div class="settings-body">
           <div class="settings-section">
-            <h3 class="settings-heading">Add website</h3>
+            <h3 class="settings-heading settings-form-heading">Add website</h3>
             <form class="settings-add-form">
               <input class="settings-input" type="text" name="pinName" placeholder="Website name" maxlength="32" required>
-              <input class="settings-input" type="url" name="pinUrl" placeholder="https://example.com" required>
-              <input class="settings-input" type="url" name="pinIconUrl" placeholder="Icon URL (optional)">
+              <input class="settings-input" type="text" name="pinUrl" placeholder="https://example.com" required spellcheck="false" autocapitalize="off">
+              <input class="settings-input" type="text" name="pinIconUrl" placeholder="Icon URL (optional)" spellcheck="false" autocapitalize="off">
               <p class="settings-hint">Paste a direct link to a PNG, SVG, or JPG icon.</p>
-              <button class="settings-btn settings-btn-primary" type="submit">Add to sidebar</button>
+              <div class="settings-form-actions">
+                <button class="settings-btn settings-btn-primary settings-form-submit" type="submit">Add to sidebar</button>
+                <button class="settings-btn settings-btn-secondary settings-form-cancel hidden" type="button">Cancel</button>
+              </div>
             </form>
           </div>
           <div class="settings-section">
@@ -276,6 +317,9 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
     panelTitleEl = root.querySelector('.panel-title')!;
     settingsPanelEl = root.querySelector('.settings-panel')!;
     settingsFormEl = root.querySelector('.settings-add-form')!;
+    settingsFormHeadingEl = root.querySelector('.settings-form-heading')!;
+    settingsFormSubmitBtnEl = root.querySelector('.settings-form-submit')!;
+    settingsFormCancelBtnEl = root.querySelector('.settings-form-cancel')!;
     settingsPinsListEl = root.querySelector('.settings-pins-list')!;
     settingsWidthInputEl = root.querySelector('.settings-width-range')!;
     settingsWidthValueEl = root.querySelector('.settings-width-value')!;
@@ -361,7 +405,11 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
 
     settingsFormEl.addEventListener('submit', (event) => {
       event.preventDefault();
-      void addPinFromSettings(new FormData(settingsFormEl));
+      void savePinFromSettings(new FormData(settingsFormEl));
+    });
+
+    settingsFormCancelBtnEl.addEventListener('click', () => {
+      resetPinForm();
     });
 
     settingsWidthInputEl.addEventListener('input', () => {
@@ -786,6 +834,7 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
     state.pins.forEach((pin, index) => {
       const li = document.createElement('li');
       li.className = 'settings-pin-item';
+      li.classList.toggle('editing', editingPinId === pin.id);
       li.draggable = true;
       li.dataset.index = String(index);
 
@@ -800,7 +849,10 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
           <div class="settings-pin-name">${escapeHtml(pin.name)}</div>
           <div class="settings-pin-url">${escapeHtml(pin.url)}</div>
         </div>
-        <button class="settings-pin-delete" type="button" title="Remove">✕</button>
+        <div class="settings-pin-actions">
+          <button class="settings-pin-edit" type="button" title="Edit">✎</button>
+          <button class="settings-pin-delete" type="button" title="Remove">✕</button>
+        </div>
       `;
 
       li.addEventListener('dragstart', () => {
@@ -845,11 +897,23 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
         void saveAndBroadcast();
       });
 
+      li.querySelector('.settings-pin-edit')!.addEventListener('mousedown', (event) => {
+        event.stopPropagation();
+      });
+
+      li.querySelector('.settings-pin-edit')!.addEventListener('click', () => {
+        beginEditPin(pin);
+      });
+
       li.querySelector('.settings-pin-delete')!.addEventListener('mousedown', (event) => {
         event.stopPropagation();
       });
 
       li.querySelector('.settings-pin-delete')!.addEventListener('click', () => {
+        if (editingPinId === pin.id) {
+          resetPinForm();
+        }
+
         state.pins.splice(index, 1);
         state.pins.forEach((entry, entryIndex) => {
           entry.order = entryIndex;
@@ -869,7 +933,34 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
     });
   }
 
-  async function addPinFromSettings(formData: FormData): Promise<void> {
+  function resetPinForm(): void {
+    editingPinId = null;
+    settingsFormEl.reset();
+    settingsFormHeadingEl.textContent = 'Add website';
+    settingsFormSubmitBtnEl.textContent = 'Add to sidebar';
+    settingsFormCancelBtnEl.classList.add('hidden');
+    renderSettingsPinsList();
+  }
+
+  function beginEditPin(pin: Pin): void {
+    editingPinId = pin.id;
+    settingsFormHeadingEl.textContent = 'Edit website';
+    settingsFormSubmitBtnEl.textContent = 'Save changes';
+    settingsFormCancelBtnEl.classList.remove('hidden');
+
+    const nameInput = settingsFormEl.elements.namedItem('pinName') as HTMLInputElement;
+    const urlInput = settingsFormEl.elements.namedItem('pinUrl') as HTMLInputElement;
+    const iconInput = settingsFormEl.elements.namedItem('pinIconUrl') as HTMLInputElement;
+    nameInput.value = pin.name;
+    urlInput.value = pin.url;
+    iconInput.value = pin.iconUrl;
+    nameInput.focus();
+
+    renderSettingsPinsList();
+    settingsFormEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  async function savePinFromSettings(formData: FormData): Promise<void> {
     const name = String(formData.get('pinName') ?? '').trim();
     const url = String(formData.get('pinUrl') ?? '').trim();
     const iconUrl = String(formData.get('pinIconUrl') ?? '').trim();
@@ -886,15 +977,32 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
       return;
     }
 
-    state.pins.push({
-      id: `custom-${Date.now()}`,
-      name,
-      url: parsedUrl.href,
-      iconUrl,
-      order: state.pins.length
-    });
+    if (editingPinId) {
+      const pin = state.pins.find((entry) => entry.id === editingPinId);
+      if (!pin) {
+        resetPinForm();
+        return;
+      }
 
-    settingsFormEl.reset();
+      pin.name = name;
+      pin.url = parsedUrl.href;
+      pin.iconUrl = iconUrl;
+
+      if (state.activePinId === pin.id && state.panelOpen) {
+        panelTitleEl.textContent = pin.name;
+        openPanelForPin(pin);
+      }
+    } else {
+      state.pins.push({
+        id: `custom-${Date.now()}`,
+        name,
+        url: parsedUrl.href,
+        iconUrl,
+        order: state.pins.length
+      });
+    }
+
+    resetPinForm();
     renderPinButtons();
     renderSettingsPinsList();
     await saveAndBroadcast();
@@ -915,6 +1023,7 @@ const COMPANION_CONTEXT_RETRY_MS = 100;
     state.panelWidth = state.settings.panelWidth;
     state.activePinId = response.data.lastActivePinId ?? null;
     state.sidebarHidden = Boolean(response.data.sidebarHidden);
+    resetPinForm();
     closePanel();
     applySidebarVisibility();
     setCssVariables();

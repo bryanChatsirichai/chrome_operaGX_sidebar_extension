@@ -251,6 +251,19 @@ $gx-text-white: #fff;
     gap: 8px;
   }
 
+  .settings-form-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .settings-form-actions .settings-btn {
+    flex: 1;
+  }
+
+  .settings-form-cancel.hidden {
+    display: none;
+  }
+
   .settings-input {
     padding: 10px 12px;
     border: 1px solid $gx-border;
@@ -352,6 +365,11 @@ $gx-text-white: #fff;
     border-color: $gx-accent;
   }
 
+  .settings-pin-item.editing {
+    border-color: $gx-accent;
+    background: #1a1014;
+  }
+
   .settings-pin-drag-handle {
     color: #555;
     font-size: 14px;
@@ -410,6 +428,28 @@ $gx-text-white: #fff;
     color: $gx-text-dim;
     cursor: pointer;
     flex-shrink: 0;
+  }
+
+  .settings-pin-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .settings-pin-edit {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: $gx-text-dim;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .settings-pin-edit:hover {
+    background: #1a1a33;
+    color: #88aaff;
   }
 
   .settings-pin-delete:hover {
