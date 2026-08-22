@@ -1,3 +1,7 @@
+/**
+ * Companion window lifecycle: create, reposition, navigate, and close
+ * the popup used when sites cannot embed in the sidebar iframe.
+ */
 import { GX_DEFAULTS, gxClamp, gxGetCompanionLayoutFromSettings } from './defaults';
 import type {
   CompanionLayout,
@@ -8,6 +12,7 @@ import type {
   WindowBounds
 } from './types';
 
+/** Live companion window state mirrored to chrome.storage.session. */
 const companionState: CompanionState = {
   windowId: null,
   pinId: null,
@@ -20,10 +25,12 @@ let repositionTimer: ReturnType<typeof setTimeout> | null = null;
 let companionOperation: Promise<CompanionOpenResult> | null = null;
 let companionCreateInProgress = false;
 
+/** Positions that follow the anchor browser window when it moves or resizes. */
 function gxCompanionTracksAnchor(position: CompanionLayout['position']): boolean {
   return position === 'right' || position === 'left';
 }
 
+/** Restores companion state from session storage after a service worker restart. */
 export async function gxRestoreCompanionState(): Promise<void> {
   const stored = await chrome.storage.session.get('companion');
   if (!stored.companion?.windowId) {
@@ -41,10 +48,12 @@ export async function gxRestoreCompanionState(): Promise<void> {
   }
 }
 
+/** Persists current companion state to session storage. */
 async function gxSaveCompanionState(): Promise<void> {
   await chrome.storage.session.set({ companion: { ...companionState } });
 }
 
+/** Clears companion tracking and removes session storage entry. */
 export async function gxClearCompanionState(): Promise<void> {
   companionState.windowId = null;
   companionState.pinId = null;
@@ -53,10 +62,12 @@ export async function gxClearCompanionState(): Promise<void> {
   await chrome.storage.session.remove('companion');
 }
 
+/** Synchronous check against in-memory companion window ID. */
 export function gxIsCompanionWindow(windowId: number | undefined): boolean {
   return Boolean(windowId && companionState.windowId && windowId === companionState.windowId);
 }
 
+/** Checks in-memory state first, then session storage for companion window ID. */
 export async function gxIsCompanionWindowAsync(windowId: number | undefined): Promise<boolean> {
   if (gxIsCompanionWindow(windowId)) {
     return true;
@@ -66,6 +77,7 @@ export async function gxIsCompanionWindowAsync(windowId: number | undefined): Pr
   return Boolean(stored.companion?.windowId && windowId === stored.companion.windowId);
 }
 
+/** Returns the primary display work area, or a sensible fallback when unavailable. */
 async function gxGetDisplayWorkArea(): Promise<DisplayWorkArea> {
   if (!chrome.system?.display?.getInfo) {
     return { left: 0, top: 0, width: 1280, height: 800 };
@@ -76,6 +88,7 @@ async function gxGetDisplayWorkArea(): Promise<DisplayWorkArea> {
   return display?.workArea ?? { left: 0, top: 0, width: 1280, height: 800 };
 }
 
+/** Ensures a Chrome window object has all four numeric bounds fields. */
 function gxHasWindowBounds(window: chrome.windows.Window): window is chrome.windows.Window & WindowBounds {
   return (
     Number.isFinite(window.left) &&
@@ -85,6 +98,7 @@ function gxHasWindowBounds(window: chrome.windows.Window): window is chrome.wind
   );
 }
 
+/** Resolves companion height from fixed setting, anchor window, or screen work area. */
 function gxResolveCompanionHeight(
   layout: CompanionLayout,
   anchor: (chrome.windows.Window & WindowBounds) | null,
@@ -101,6 +115,7 @@ function gxResolveCompanionHeight(
   return Math.max(GX_DEFAULTS.COMPANION_MIN_HEIGHT, Math.round(workArea.height));
 }
 
+/** Computes top-left origin for the companion based on position preference. */
 function gxResolveCompanionPosition(
   layout: CompanionLayout,
   anchor: (chrome.windows.Window & WindowBounds) | null,
@@ -141,6 +156,7 @@ function gxResolveCompanionPosition(
   };
 }
 
+/** Keeps window bounds within the visible work area. */
 function gxClampBoundsToWorkArea(bounds: WindowBounds, workArea: DisplayWorkArea): WindowBounds {
   const width = Math.min(bounds.width, workArea.width);
   const height = Math.min(bounds.height, workArea.height);
@@ -155,6 +171,7 @@ function gxClampBoundsToWorkArea(bounds: WindowBounds, workArea: DisplayWorkArea
   };
 }
 
+/** Calculates final pixel bounds for a new or repositioned companion window. */
 async function gxGetCompanionBounds(
   anchorWindowId: number,
   layout: Partial<Settings & CompanionLayout>
@@ -169,18 +186,10 @@ async function gxGetCompanionBounds(
     anchor = null;
   }
 
+  const boundedAnchor = anchor && gxHasWindowBounds(anchor) ? anchor : null;
   const width = normalizedLayout.width;
-  const height = gxResolveCompanionHeight(
-    normalizedLayout,
-    anchor && gxHasWindowBounds(anchor) ? anchor : null,
-    workArea
-  );
-  const position = gxResolveCompanionPosition(
-    normalizedLayout,
-    anchor && gxHasWindowBounds(anchor) ? anchor : null,
-    workArea,
-    width
-  );
+  const height = gxResolveCompanionHeight(normalizedLayout, boundedAnchor, workArea);
+  const position = gxResolveCompanionPosition(normalizedLayout, boundedAnchor, workArea, width);
 
   return gxClampBoundsToWorkArea(
     {
@@ -193,6 +202,7 @@ async function gxGetCompanionBounds(
   );
 }
 
+/** Builds chrome.windows.create options, omitting position when coordinates are invalid. */
 function buildWindowCreateOptions(bounds: WindowBounds, url: string): chrome.windows.CreateData {
   const options: chrome.windows.CreateData = {
     url,
@@ -210,6 +220,7 @@ function buildWindowCreateOptions(bounds: WindowBounds, url: string): chrome.win
   return options;
 }
 
+/** Opens a new companion popup, retrying without position if the OS rejects coordinates. */
 async function gxCreateCompanionWindow(
   url: string,
   anchorWindowId: number,
@@ -231,6 +242,7 @@ async function gxCreateCompanionWindow(
   }
 }
 
+/** Applies current layout bounds to the existing companion window. */
 async function gxApplyCompanionWindowBounds(): Promise<void> {
   if (!(await gxEnsureValidCompanionWindow())) {
     return;
@@ -249,6 +261,7 @@ async function gxApplyCompanionWindowBounds(): Promise<void> {
   }
 }
 
+/** Repositions companion when anchor-relative layout is active. */
 async function gxRepositionCompanion(): Promise<void> {
   if (!companionState.windowId || !companionState.anchorWindowId) {
     return;
@@ -261,6 +274,7 @@ async function gxRepositionCompanion(): Promise<void> {
   await gxApplyCompanionWindowBounds();
 }
 
+/** Debounces rapid anchor window resize/move events before repositioning. */
 function scheduleRepositionCompanion(): void {
   if (!gxCompanionTracksAnchor(companionState.layout.position)) {
     return;
@@ -276,6 +290,7 @@ function scheduleRepositionCompanion(): void {
   }, 150);
 }
 
+/** Navigates the companion tab to a new URL and updates tracked state. */
 async function gxNavigateCompanionTab(
   url: string,
   pinId: string,
@@ -299,6 +314,7 @@ async function gxNavigateCompanionTab(
   await gxApplyCompanionWindowBounds();
 }
 
+/** Verifies the companion window still exists; clears stale state if not. */
 async function gxEnsureValidCompanionWindow(): Promise<boolean> {
   if (!companionState.windowId) {
     return false;
@@ -313,6 +329,10 @@ async function gxEnsureValidCompanionWindow(): Promise<boolean> {
   }
 }
 
+/**
+ * Opens or reuses the companion window for a pin.
+ * Serializes concurrent calls through a single in-flight promise.
+ */
 export async function gxOpenOrNavigateCompanion(params: {
   url: string;
   pinId: string;
@@ -376,6 +396,7 @@ async function gxOpenOrNavigateCompanionInternal(params: {
   }
 }
 
+/** Navigates within the companion window when the request originates from that window. */
 export async function gxNavigateWithinCompanionWindow(
   tabId: number,
   url: string,
@@ -395,6 +416,7 @@ export async function gxNavigateWithinCompanionWindow(
   return { ok: true, open: true, pinId, navigatedInPlace: true };
 }
 
+/** Closes the companion window and notifies content scripts. */
 export async function gxCloseCompanion(): Promise<CompanionOpenResult> {
   if (!(await gxEnsureValidCompanionWindow())) {
     return { ok: true, open: false };
@@ -414,6 +436,7 @@ export async function gxCloseCompanion(): Promise<CompanionOpenResult> {
   return { ok: true, open: false };
 }
 
+/** Applies updated layout settings to an open companion window. */
 export async function gxUpdateCompanionLayout(layout: Partial<Settings & CompanionLayout>): Promise<void> {
   if (!(await gxEnsureValidCompanionWindow())) {
     return;
@@ -424,6 +447,7 @@ export async function gxUpdateCompanionLayout(layout: Partial<Settings & Compani
   await gxApplyCompanionWindowBounds();
 }
 
+/** Registers one-time listeners for anchor moves and window close events. */
 function gxRegisterCompanionListeners(): void {
   if (listenersRegistered) {
     return;
@@ -457,6 +481,7 @@ function gxRegisterCompanionListeners(): void {
   });
 }
 
+/** Notifies all tabs that the companion window closed so UI can deselect pins. */
 async function broadcastCompanionClosed(pinId: string | null): Promise<void> {
   const tabs = await chrome.tabs.query({});
   await Promise.all(

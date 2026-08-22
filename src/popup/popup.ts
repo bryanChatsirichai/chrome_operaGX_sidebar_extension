@@ -1,47 +1,94 @@
+/**
+ * Extension popup: manage pins, panel width, and companion window settings.
+ * Changes are saved to sync storage and broadcast to all sidebar content scripts.
+ */
 import { GX_DEFAULTS, gxGetDefaultStorageData } from '../lib/defaults';
 import type { Pin, Settings } from '../lib/types';
 import './popup.module.scss';
 
+/** Typed DOM lookup helper — elements are guaranteed present in popup.html. */
 function byId<T extends HTMLElement>(id: string): T {
   return document.getElementById(id) as T;
+}
+
+/** Cached references to form controls queried once at init. */
+interface PopupElements {
+  panelWidthInput: HTMLInputElement;
+  panelWidthValue: HTMLElement;
+  companionWidthInput: HTMLInputElement;
+  companionWidthValue: HTMLElement;
+  companionHeightModeInput: HTMLSelectElement;
+  companionHeightInput: HTMLInputElement;
+  companionHeightValue: HTMLElement;
+  companionPositionInput: HTMLSelectElement;
+  companionHeightRow: HTMLElement;
+  addPinForm: HTMLFormElement;
+  resetBtn: HTMLButtonElement;
+  pinsList: HTMLUListElement;
 }
 
 let pins: Pin[] = [];
 let settings: Settings = { ...GX_DEFAULTS.DEFAULT_SETTINGS };
 let draggedIndex: number | null = null;
+let elements: PopupElements;
 
 document.addEventListener('DOMContentLoaded', init);
 
-async function init() {
+async function init(): Promise<void> {
+  cacheElements();
   await loadData();
   bindEvents();
   renderPinsList();
   updateSettingsControls();
 }
 
-async function loadData() {
+/** Caches DOM references to avoid repeated getElementById calls. */
+function cacheElements(): void {
+  elements = {
+    panelWidthInput: byId('panelWidth'),
+    panelWidthValue: byId('panelWidthValue'),
+    companionWidthInput: byId('companionWidth'),
+    companionWidthValue: byId('companionWidthValue'),
+    companionHeightModeInput: byId('companionHeightMode'),
+    companionHeightInput: byId('companionHeight'),
+    companionHeightValue: byId('companionHeightValue'),
+    companionPositionInput: byId('companionPosition'),
+    companionHeightRow: byId('companionHeightRow'),
+    addPinForm: byId('addPinForm'),
+    resetBtn: byId('resetBtn'),
+    pinsList: byId('pinsList')
+  };
+}
+
+async function loadData(): Promise<void> {
   const response = await chrome.runtime.sendMessage({ action: 'getStorageData' });
-  pins = (response.pins ?? gxGetDefaultStorageData().pins).slice().sort((a: Pin, b: Pin) => a.order - b.order);
+  pins = (response.pins ?? gxGetDefaultStorageData().pins)
+    .slice()
+    .sort((a: Pin, b: Pin) => a.order - b.order);
   settings = { ...GX_DEFAULTS.DEFAULT_SETTINGS, ...(response.settings ?? {}) };
 }
 
-function bindEvents() {
-  const panelWidthInput = byId<HTMLInputElement>('panelWidth');
-  const panelWidthValue = byId('panelWidthValue');
-  const companionWidthInput = byId<HTMLInputElement>('companionWidth');
-  const companionWidthValue = byId('companionWidthValue');
-  const companionHeightModeInput = byId<HTMLSelectElement>('companionHeightMode');
-  const companionHeightInput = byId<HTMLInputElement>('companionHeight');
-  const companionHeightValue = byId('companionHeightValue');
-  const companionPositionInput = byId<HTMLSelectElement>('companionPosition');
+function bindEvents(): void {
+  const {
+    panelWidthInput,
+    panelWidthValue,
+    companionWidthInput,
+    companionWidthValue,
+    companionHeightModeInput,
+    companionHeightInput,
+    companionHeightValue,
+    companionPositionInput,
+    addPinForm,
+    resetBtn
+  } = elements;
 
   panelWidthInput.addEventListener('input', () => {
     settings.panelWidth = Number(panelWidthInput.value);
     panelWidthValue.textContent = `${settings.panelWidth}px`;
   });
 
-  panelWidthInput.addEventListener('change', async () => {
-    await saveAndBroadcast();
+  panelWidthInput.addEventListener('change', () => {
+    void saveAndBroadcast();
   });
 
   companionWidthInput.addEventListener('input', () => {
@@ -49,15 +96,15 @@ function bindEvents() {
     companionWidthValue.textContent = `${settings.companionWidth}px`;
   });
 
-  companionWidthInput.addEventListener('change', async () => {
-    await saveAndBroadcast();
+  companionWidthInput.addEventListener('change', () => {
+    void saveAndBroadcast();
   });
 
-  companionHeightModeInput.addEventListener('change', async () => {
+  companionHeightModeInput.addEventListener('change', () => {
     settings.companionHeightMode =
       companionHeightModeInput.value as Settings['companionHeightMode'];
     updateCompanionHeightVisibility();
-    await saveAndBroadcast();
+    void saveAndBroadcast();
   });
 
   companionHeightInput.addEventListener('input', () => {
@@ -65,67 +112,80 @@ function bindEvents() {
     companionHeightValue.textContent = `${settings.companionHeight}px`;
   });
 
-  companionHeightInput.addEventListener('change', async () => {
-    await saveAndBroadcast();
+  companionHeightInput.addEventListener('change', () => {
+    void saveAndBroadcast();
   });
 
-  companionPositionInput.addEventListener('change', async () => {
+  companionPositionInput.addEventListener('change', () => {
     settings.companionPosition = companionPositionInput.value as Settings['companionPosition'];
-    await saveAndBroadcast();
+    void saveAndBroadcast();
   });
 
-  byId<HTMLFormElement>('addPinForm').addEventListener('submit', async (event) => {
+  addPinForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    await addPin();
+    void addPin();
   });
 
-  byId('resetBtn').addEventListener('click', async () => {
-    if (!confirm('Reset all pins and settings to defaults?')) {
-      return;
-    }
-
-    const response = await chrome.runtime.sendMessage({ action: 'resetStorage' });
-    if (response.ok) {
-      pins = response.data.pins;
-      settings = response.data.settings;
-      renderPinsList();
-      updateSettingsControls();
-    }
+  resetBtn.addEventListener('click', () => {
+    void resetToDefaults();
   });
 }
 
-function updateSettingsControls() {
-  const panelWidthInput = byId<HTMLInputElement>('panelWidth');
-  const panelWidthValue = byId('panelWidthValue');
-  const companionWidthInput = byId<HTMLInputElement>('companionWidth');
-  const companionWidthValue = byId('companionWidthValue');
-  const companionHeightModeInput = byId<HTMLSelectElement>('companionHeightMode');
-  const companionHeightInput = byId<HTMLInputElement>('companionHeight');
-  const companionHeightValue = byId('companionHeightValue');
-  const companionPositionInput = byId<HTMLSelectElement>('companionPosition');
+async function resetToDefaults(): Promise<void> {
+  if (!confirm('Reset all pins and settings to defaults?')) {
+    return;
+  }
+
+  const response = await chrome.runtime.sendMessage({ action: 'resetStorage' });
+  if (response.ok) {
+    pins = response.data.pins;
+    settings = response.data.settings;
+    renderPinsList();
+    updateSettingsControls();
+  }
+}
+
+function updateSettingsControls(): void {
+  const {
+    panelWidthInput,
+    panelWidthValue,
+    companionWidthInput,
+    companionWidthValue,
+    companionHeightModeInput,
+    companionHeightInput,
+    companionHeightValue,
+    companionPositionInput
+  } = elements;
 
   panelWidthInput.value = String(settings.panelWidth);
   panelWidthValue.textContent = `${settings.panelWidth}px`;
 
-  companionWidthInput.value = String(settings.companionWidth ?? GX_DEFAULTS.DEFAULT_SETTINGS.companionWidth);
+  companionWidthInput.value = String(
+    settings.companionWidth ?? GX_DEFAULTS.DEFAULT_SETTINGS.companionWidth
+  );
   companionWidthValue.textContent = `${companionWidthInput.value}px`;
+
   companionHeightModeInput.value =
     settings.companionHeightMode ?? GX_DEFAULTS.DEFAULT_SETTINGS.companionHeightMode;
-  companionHeightInput.value = String(settings.companionHeight ?? GX_DEFAULTS.DEFAULT_SETTINGS.companionHeight);
+
+  companionHeightInput.value = String(
+    settings.companionHeight ?? GX_DEFAULTS.DEFAULT_SETTINGS.companionHeight
+  );
   companionHeightValue.textContent = `${companionHeightInput.value}px`;
+
   companionPositionInput.value =
     settings.companionPosition ?? GX_DEFAULTS.DEFAULT_SETTINGS.companionPosition;
+
   updateCompanionHeightVisibility();
 }
 
-function updateCompanionHeightVisibility() {
-  const companionHeightModeInput = byId<HTMLSelectElement>('companionHeightMode');
-  const companionHeightRow = byId('companionHeightRow');
+function updateCompanionHeightVisibility(): void {
+  const { companionHeightModeInput, companionHeightRow } = elements;
   companionHeightRow.classList.toggle('hidden', companionHeightModeInput.value !== 'fixed');
 }
 
-function renderPinsList() {
-  const list = byId<HTMLUListElement>('pinsList');
+function renderPinsList(): void {
+  const { pinsList: list } = elements;
   list.innerHTML = '';
 
   if (pins.length === 0) {
@@ -173,44 +233,48 @@ function renderPinsList() {
       li.classList.remove('drag-over');
     });
 
-    li.addEventListener('drop', async (event) => {
+    li.addEventListener('drop', (event) => {
       event.preventDefault();
       li.classList.remove('drag-over');
-      const targetIndex = index;
-      if (draggedIndex === null || draggedIndex === targetIndex) return;
+
+      if (draggedIndex === null || draggedIndex === index) {
+        return;
+      }
 
       const [moved] = pins.splice(draggedIndex, 1);
-      pins.splice(targetIndex, 0, moved);
-      pins.forEach((p, i) => {
-        p.order = i;
+      pins.splice(index, 0, moved);
+      pins.forEach((entry, entryIndex) => {
+        entry.order = entryIndex;
       });
 
       draggedIndex = null;
       renderPinsList();
-      await saveAndBroadcast();
+      void saveAndBroadcast();
     });
 
-    li.querySelector('.pin-delete')!.addEventListener('click', async () => {
+    li.querySelector('.pin-delete')!.addEventListener('click', () => {
       pins.splice(index, 1);
-      pins.forEach((p, i) => {
-        p.order = i;
+      pins.forEach((entry, entryIndex) => {
+        entry.order = entryIndex;
       });
       renderPinsList();
-      await saveAndBroadcast();
+      void saveAndBroadcast();
     });
 
     list.appendChild(li);
   });
 }
 
-async function addPin() {
+async function addPin(): Promise<void> {
   const name = byId<HTMLInputElement>('pinName').value.trim();
   const url = byId<HTMLInputElement>('pinUrl').value.trim();
   const iconUrl = byId<HTMLInputElement>('pinIconUrl').value.trim();
 
-  if (!name || !url) return;
+  if (!name || !url) {
+    return;
+  }
 
-  let parsedUrl;
+  let parsedUrl: URL;
   try {
     parsedUrl = new URL(url);
   } catch {
@@ -218,21 +282,20 @@ async function addPin() {
     return;
   }
 
-  const id = 'custom-' + Date.now();
   pins.push({
-    id,
+    id: `custom-${Date.now()}`,
     name,
     url: parsedUrl.href,
     iconUrl: iconUrl || '',
     order: pins.length
   });
 
-  byId<HTMLFormElement>('addPinForm').reset();
+  elements.addPinForm.reset();
   renderPinsList();
   await saveAndBroadcast();
 }
 
-async function saveAndBroadcast() {
+async function saveAndBroadcast(): Promise<void> {
   await chrome.storage.sync.set({ pins, settings });
   await chrome.runtime.sendMessage({
     action: 'broadcastPinsUpdated',
@@ -241,18 +304,25 @@ async function saveAndBroadcast() {
   });
 }
 
-function resolveIconUrl(iconUrl: string) {
-  if (!iconUrl) return '';
-  if (iconUrl.startsWith('http')) return iconUrl;
+/** Resolves extension-relative icon paths to full chrome-extension:// URLs. */
+function resolveIconUrl(iconUrl: string): string {
+  if (!iconUrl) {
+    return '';
+  }
+  if (iconUrl.startsWith('http')) {
+    return iconUrl;
+  }
   return chrome.runtime.getURL(iconUrl);
 }
 
-function escapeHtml(text: string) {
+/** Escapes text for safe insertion into HTML content. */
+function escapeHtml(text: string): string {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
 }
 
-function escapeAttr(text: string) {
+/** Escapes quotes for safe use inside HTML attribute values. */
+function escapeAttr(text: string): string {
   return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

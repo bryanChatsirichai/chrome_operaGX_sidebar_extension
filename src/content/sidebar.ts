@@ -1,8 +1,14 @@
-import { GX_DEFAULTS, gxGetDefaultStorageData, gxIsDomainBlocked } from '../lib/defaults';
+/**
+ * Content script: injects the GX sidebar into every top-level page.
+ * Renders pinned sites in a shadow-DOM strip, loads them in an iframe panel,
+ * and falls back to a companion popup when embedding is blocked.
+ */
+import { GX_DEFAULTS, gxClamp, gxGetDefaultStorageData, gxIsDomainBlocked } from '../lib/defaults';
 import type { CompanionOpenResult, Pin, Settings } from '../lib/types';
 import sidebarStyles from './sidebar.module.scss?inline';
 import pageShiftStyles from './page-shift.module.scss?inline';
 
+/** In-memory UI state for the sidebar instance on this page. */
 interface SidebarState {
   pins: Pin[];
   settings: Settings;
@@ -14,7 +20,24 @@ interface SidebarState {
   panelWidth: number;
 }
 
+/** Matches error page text shown when a site refuses iframe embedding. */
+const EMBED_BLOCKED_PATTERN =
+  /refused to connect|content is blocked|contact the site owner|can't be embedded|cannot be displayed|x-frame-options|frame-ancestors|failed to load|err_blocked_by/i;
+
+/** Max polling attempts while waiting for iframe navigation to settle. */
+const IFRAME_VERIFY_MAX_ATTEMPTS = 5;
+
+/** Delay between iframe embed verification retries (ms). */
+const IFRAME_VERIFY_RETRY_MS = 100;
+
+/** Retries when asking the background if this tab is the companion window. */
+const COMPANION_CONTEXT_MAX_ATTEMPTS = 5;
+
+/** Delay between companion context checks while the service worker wakes (ms). */
+const COMPANION_CONTEXT_RETRY_MS = 100;
+
 (function initGxSidebar(): void {
+  // Skip iframes and pages that already have the sidebar host element.
   if (window.top !== window.self || document.getElementById('gx-sidebar-host')) {
     return;
   }
@@ -30,6 +53,7 @@ interface SidebarState {
     panelWidth: GX_DEFAULTS.DEFAULT_SETTINGS.panelWidth
   };
 
+  // Shadow DOM and panel element references (assigned during createSidebar).
   let shadowRoot: ShadowRoot | null = null;
   let hostEl: HTMLDivElement | null = null;
   let stripEl!: HTMLElement;
@@ -52,17 +76,19 @@ interface SidebarState {
   let settingsCompanionPositionEl!: HTMLSelectElement;
   let settingsButtonEl: HTMLButtonElement | null = null;
   let settingsDraggedIndex: number | null = null;
+
+  // Iframe embed detection state.
   let iframeVerifyTimer: ReturnType<typeof setTimeout> | null = null;
   let iframeVerifyGeneration = 0;
   let embedFailureHandled = false;
   let embedFailureInFlight: Promise<CompanionOpenResult | undefined> | null = null;
 
-  const EMBED_BLOCKED_PATTERN =
-    /refused to connect|content is blocked|contact the site owner|can't be embedded|cannot be displayed|x-frame-options|frame-ancestors|failed to load|err_blocked_by/i;
-
   bootstrap();
 
-  function injectPageShiftStyles() {
+  // --- Bootstrap ---
+
+  /** Injects CSS that shifts page content to make room for the sidebar strip/panel. */
+  function injectPageShiftStyles(): void {
     if (document.getElementById('gx-page-shift-styles')) {
       return;
     }
@@ -73,8 +99,9 @@ interface SidebarState {
     document.documentElement.appendChild(style);
   }
 
-  async function bootstrap() {
+  async function bootstrap(): Promise<void> {
     injectPageShiftStyles();
+
     if (await isCompanionContext()) {
       return;
     }
@@ -85,8 +112,9 @@ interface SidebarState {
     registerMessageListener();
   }
 
-  async function isCompanionContext() {
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+  /** Returns true when this tab is the companion popup (sidebar should not render). */
+  async function isCompanionContext(): Promise<boolean> {
+    for (let attempt = 0; attempt < COMPANION_CONTEXT_MAX_ATTEMPTS; attempt += 1) {
       try {
         const context = await chrome.runtime.sendMessage({ action: 'getSidebarContext' });
         if (context?.isCompanionWindow) {
@@ -96,15 +124,15 @@ interface SidebarState {
         return false;
       }
 
-      if (attempt < 5) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
+      if (attempt < COMPANION_CONTEXT_MAX_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, COMPANION_CONTEXT_RETRY_MS));
       }
     }
 
     return false;
   }
 
-  async function loadStorageData() {
+  async function loadStorageData(): Promise<void> {
     try {
       const stored = await chrome.storage.sync.get(['pins', 'settings', 'lastActivePinId', 'sidebarHidden']);
       const defaults = gxGetDefaultStorageData();
@@ -120,7 +148,9 @@ interface SidebarState {
     }
   }
 
-  function createSidebar() {
+  // --- DOM construction ---
+
+  function createSidebar(): void {
     hostEl = document.createElement('div');
     hostEl.id = 'gx-sidebar-host';
     document.documentElement.appendChild(hostEl);
@@ -143,7 +173,7 @@ interface SidebarState {
     setCssVariables();
   }
 
-  function buildSidebarHtml() {
+  function buildSidebarHtml(): string {
     return `
       <aside class="icon-strip" part="icon-strip"></aside>
       <section class="app-panel" part="app-panel">
@@ -237,7 +267,7 @@ interface SidebarState {
     `;
   }
 
-  function cacheElements(root: ParentNode) {
+  function cacheElements(root: ParentNode): void {
     stripEl = root.querySelector('.icon-strip')!;
     panelEl = root.querySelector('.app-panel')!;
     iframeEl = root.querySelector('.panel-iframe')!;
@@ -258,24 +288,27 @@ interface SidebarState {
     settingsCompanionPositionEl = root.querySelector('.settings-companion-position')!;
   }
 
-  function setCssVariables() {
+  /** Syncs CSS custom properties on both the page and shadow root for layout width. */
+  function setCssVariables(): void {
     document.documentElement.style.setProperty('--gx-strip-width', `${GX_DEFAULTS.STRIP_WIDTH}px`);
     document.documentElement.style.setProperty('--gx-panel-width', `${state.panelWidth}px`);
-    if (shadowRoot) {
-      const root = shadowRoot.querySelector('.sidebar-root') as HTMLElement | null;
-      if (root) {
-        root.style.setProperty('--gx-strip-width', `${GX_DEFAULTS.STRIP_WIDTH}px`);
-        root.style.setProperty('--gx-panel-width', `${state.panelWidth}px`);
-      }
+
+    const root = shadowRoot?.querySelector('.sidebar-root') as HTMLElement | null;
+    if (root) {
+      root.style.setProperty('--gx-strip-width', `${GX_DEFAULTS.STRIP_WIDTH}px`);
+      root.style.setProperty('--gx-panel-width', `${state.panelWidth}px`);
     }
   }
 
-  function renderPinButtons() {
+  // --- Icon strip ---
+
+  function renderPinButtons(): void {
     stripEl.innerHTML = '';
 
-    state.pins.forEach((pin) => {
+    for (const pin of state.pins) {
       const btn = document.createElement('button');
-      btn.className = 'pin-button' + (state.activePinId === pin.id ? ' active' : '');
+      btn.className = 'pin-button';
+      btn.classList.toggle('active', state.activePinId === pin.id);
       btn.type = 'button';
       btn.title = pin.name;
       btn.dataset.pinId = pin.id;
@@ -294,7 +327,7 @@ interface SidebarState {
 
       btn.addEventListener('click', () => handlePinClick(pin));
       stripEl.appendChild(btn);
-    });
+    }
 
     const spacer = document.createElement('div');
     spacer.className = 'strip-spacer';
@@ -304,7 +337,8 @@ interface SidebarState {
     footer.className = 'strip-footer';
 
     const settingsBtn = document.createElement('button');
-    settingsBtn.className = 'settings-button' + (state.settingsOpen ? ' active' : '');
+    settingsBtn.className = 'settings-button';
+    settingsBtn.classList.toggle('active', state.settingsOpen);
     settingsBtn.type = 'button';
     settingsBtn.title = 'Settings';
     settingsBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>';
@@ -315,7 +349,9 @@ interface SidebarState {
     stripEl.appendChild(footer);
   }
 
-  function bindSidebarEvents() {
+  // --- Event bindings ---
+
+  function bindSidebarEvents(): void {
     const root = shadowRoot!.querySelector('.sidebar-root')!;
 
     root.querySelector('.close-btn')!.addEventListener('click', closePanel);
@@ -323,9 +359,9 @@ interface SidebarState {
     root.querySelector('.open-tab-btn')!.addEventListener('click', openActivePinInCompanion);
     root.querySelector('.settings-close-btn')!.addEventListener('click', closeSettings);
 
-    settingsFormEl.addEventListener('submit', async (event) => {
+    settingsFormEl.addEventListener('submit', (event) => {
       event.preventDefault();
-      await addPinFromSettings(new FormData(settingsFormEl));
+      void addPinFromSettings(new FormData(settingsFormEl));
     });
 
     settingsWidthInputEl.addEventListener('input', () => {
@@ -336,7 +372,7 @@ interface SidebarState {
     });
 
     settingsWidthInputEl.addEventListener('change', () => {
-      saveAndBroadcast();
+      void saveAndBroadcast();
     });
 
     settingsCompanionWidthInputEl.addEventListener('input', () => {
@@ -345,14 +381,14 @@ interface SidebarState {
     });
 
     settingsCompanionWidthInputEl.addEventListener('change', () => {
-      saveAndBroadcast();
+      void saveAndBroadcast();
     });
 
     settingsCompanionHeightModeEl.addEventListener('change', () => {
       state.settings.companionHeightMode =
         settingsCompanionHeightModeEl.value as Settings['companionHeightMode'];
       updateCompanionHeightControlVisibility();
-      saveAndBroadcast();
+      void saveAndBroadcast();
     });
 
     settingsCompanionHeightInputEl.addEventListener('input', () => {
@@ -361,25 +397,32 @@ interface SidebarState {
     });
 
     settingsCompanionHeightInputEl.addEventListener('change', () => {
-      saveAndBroadcast();
+      void saveAndBroadcast();
     });
 
     settingsCompanionPositionEl.addEventListener('change', () => {
       state.settings.companionPosition =
         settingsCompanionPositionEl.value as Settings['companionPosition'];
-      saveAndBroadcast();
+      void saveAndBroadcast();
     });
 
-    root.querySelector('.settings-reset-btn')!.addEventListener('click', resetToDefaults);
+    root.querySelector('.settings-reset-btn')!.addEventListener('click', () => {
+      void resetToDefaults();
+    });
 
     iframeEl.addEventListener('load', handleIframeLoad);
     iframeEl.addEventListener('error', () => {
       const pin = getActivePin();
       if (pin && state.panelOpen && !embedFailureHandled && !embedFailureInFlight) {
-        handleEmbedFailure(pin);
+        void handleEmbedFailure(pin);
       }
     });
 
+    bindPanelResize(root);
+  }
+
+  /** Enables drag-to-resize on the panel width handle. */
+  function bindPanelResize(root: ParentNode): void {
     const resizeHandle = root.querySelector('.resize-handle')!;
     let dragging = false;
     let startX = 0;
@@ -396,11 +439,14 @@ interface SidebarState {
       event.preventDefault();
     });
 
-    function onResizeMove(event: Event) {
-      if (!dragging) return;
+    function onResizeMove(event: Event): void {
+      if (!dragging) {
+        return;
+      }
+
       const mouseEvent = event as MouseEvent;
       const delta = mouseEvent.clientX - startX;
-      state.panelWidth = clamp(
+      state.panelWidth = gxClamp(
         startWidth + delta,
         GX_DEFAULTS.PANEL_MIN_WIDTH,
         GX_DEFAULTS.PANEL_MAX_WIDTH
@@ -409,16 +455,18 @@ interface SidebarState {
       applyLayoutClasses();
     }
 
-    function onResizeEnd() {
+    function onResizeEnd(): void {
       dragging = false;
       resizeHandle.classList.remove('dragging');
       document.removeEventListener('mousemove', onResizeMove);
       document.removeEventListener('mouseup', onResizeEnd);
-      chrome.storage.sync.set({ settings: { ...state.settings, panelWidth: state.panelWidth } });
+      void chrome.storage.sync.set({ settings: { ...state.settings, panelWidth: state.panelWidth } });
     }
   }
 
-  function handlePinClick(pin: Pin) {
+  // --- Panel open/close ---
+
+  function handlePinClick(pin: Pin): void {
     if (state.settingsOpen) {
       closeSettings();
     }
@@ -432,10 +480,10 @@ interface SidebarState {
     state.panelOpen = true;
     renderPinButtons();
     openPanelForPin(pin);
-    chrome.runtime.sendMessage({ action: 'saveLastActivePin', pinId: pin.id });
+    void chrome.runtime.sendMessage({ action: 'saveLastActivePin', pinId: pin.id });
   }
 
-  function openPanelForPin(pin: Pin) {
+  function openPanelForPin(pin: Pin): void {
     embedFailureHandled = false;
     embedFailureInFlight = null;
     iframeVerifyGeneration += 1;
@@ -458,12 +506,34 @@ interface SidebarState {
         state.panelOpen &&
         getActivePin()?.id === pin.id
       ) {
-        handleEmbedFailure(pin);
+        void handleEmbedFailure(pin);
       }
     }, GX_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS);
   }
 
-  function getIframeLocationHref() {
+  function closePanel(): void {
+    state.panelOpen = false;
+    panelEl.classList.remove('open');
+    embedFailureHandled = false;
+    embedFailureInFlight = null;
+    iframeVerifyGeneration += 1;
+    clearIframeTimer();
+    clearIframeVerifyTimer();
+    hideAllPanelViews();
+    iframeEl.src = 'about:blank';
+    applyLayoutClasses();
+  }
+
+  function refreshActivePin(): void {
+    const pin = getActivePin();
+    if (pin && state.panelOpen) {
+      openPanelForPin(pin);
+    }
+  }
+
+  // --- Iframe embed detection ---
+
+  function getIframeLocationHref(): string | null {
     try {
       return iframeEl.contentWindow?.location?.href ?? '';
     } catch {
@@ -471,7 +541,7 @@ interface SidebarState {
     }
   }
 
-  function getIframeDocumentText() {
+  function getIframeDocumentText(): string {
     try {
       const doc = iframeEl.contentDocument;
       if (!doc) {
@@ -486,7 +556,7 @@ interface SidebarState {
     }
   }
 
-  function isIframeEmbedBlocked() {
+  function isIframeEmbedBlocked(): boolean {
     const href = getIframeLocationHref();
 
     if (typeof href === 'string' && href.startsWith('chrome-error:')) {
@@ -496,22 +566,23 @@ interface SidebarState {
     return EMBED_BLOCKED_PATTERN.test(getIframeDocumentText());
   }
 
-  function showIframeLoaded() {
+  function showIframeLoaded(): void {
     clearIframeTimer();
     clearIframeVerifyTimer();
     hideAllPanelViews();
     iframeEl.classList.remove('hidden');
-    chrome.runtime.sendMessage({ action: 'closeCompanion' }).catch(() => {});
+    void chrome.runtime.sendMessage({ action: 'closeCompanion' }).catch(() => {});
   }
 
-  function startIframeVerification(pin: Pin) {
+  function startIframeVerification(pin: Pin): void {
     iframeVerifyGeneration += 1;
     const generation = iframeVerifyGeneration;
     clearIframeVerifyTimer();
     verifyIframeEmbed(pin, 0, generation);
   }
 
-  function verifyIframeEmbed(pin: Pin, attempt = 0, generation = iframeVerifyGeneration) {
+  /** Polls iframe state until load succeeds, embed is blocked, or retries exhaust. */
+  function verifyIframeEmbed(pin: Pin, attempt = 0, generation = iframeVerifyGeneration): void {
     if (generation !== iframeVerifyGeneration) {
       return;
     }
@@ -521,27 +592,33 @@ interface SidebarState {
     }
 
     if (isIframeEmbedBlocked()) {
-      handleEmbedFailure(pin);
+      void handleEmbedFailure(pin);
       return;
     }
 
     const href = getIframeLocationHref();
 
     if (href === 'about:blank' || href === '') {
-      if (attempt < 30) {
-        iframeVerifyTimer = setTimeout(() => verifyIframeEmbed(pin, attempt + 1, generation), 100);
+      if (attempt < IFRAME_VERIFY_MAX_ATTEMPTS) {
+        iframeVerifyTimer = setTimeout(
+          () => verifyIframeEmbed(pin, attempt + 1, generation),
+          IFRAME_VERIFY_RETRY_MS
+        );
       }
       return;
     }
 
     if (href === null) {
-      if (attempt < 10) {
-        iframeVerifyTimer = setTimeout(() => verifyIframeEmbed(pin, attempt + 1, generation), 150);
+      if (attempt < IFRAME_VERIFY_MAX_ATTEMPTS) {
+        iframeVerifyTimer = setTimeout(
+          () => verifyIframeEmbed(pin, attempt + 1, generation),
+          IFRAME_VERIFY_RETRY_MS
+        );
         return;
       }
 
       if (gxIsDomainBlocked(pin.url)) {
-        handleEmbedFailure(pin);
+        void handleEmbedFailure(pin);
         return;
       }
 
@@ -550,19 +627,19 @@ interface SidebarState {
     }
 
     if (isIframeEmbedBlocked()) {
-      handleEmbedFailure(pin);
+      void handleEmbedFailure(pin);
       return;
     }
 
     if (gxIsDomainBlocked(pin.url)) {
-      handleEmbedFailure(pin);
+      void handleEmbedFailure(pin);
       return;
     }
 
     showIframeLoaded();
   }
 
-  function handleIframeLoad() {
+  function handleIframeLoad(): void {
     const activePin = getActivePin();
     if (!activePin || !state.panelOpen || embedFailureHandled || embedFailureInFlight) {
       return;
@@ -571,7 +648,8 @@ interface SidebarState {
     startIframeVerification(activePin);
   }
 
-  function handleEmbedFailure(pin: Pin) {
+  /** Opens the companion window when iframe embedding fails; shows fallback UI if that also fails. */
+  function handleEmbedFailure(pin: Pin): Promise<CompanionOpenResult | undefined> | null {
     if (embedFailureHandled || embedFailureInFlight) {
       return embedFailureInFlight;
     }
@@ -601,7 +679,7 @@ interface SidebarState {
     return embedFailureInFlight;
   }
 
-  function showFallbackUI(pin: Pin) {
+  function showFallbackUI(pin: Pin): void {
     clearIframeTimer();
     hideAllPanelViews();
     iframeEl.src = 'about:blank';
@@ -612,6 +690,7 @@ interface SidebarState {
 
     const iconContainer = fallbackEl.querySelector('.fallback-icon')!;
     iconContainer.innerHTML = '';
+
     if (pin.iconUrl) {
       const img = document.createElement('img');
       img.src = pin.iconUrl.startsWith('http') ? pin.iconUrl : chrome.runtime.getURL(pin.iconUrl);
@@ -622,27 +701,29 @@ interface SidebarState {
     }
   }
 
-  function hideAllPanelViews() {
+  function hideAllPanelViews(): void {
     loadingEl.classList.remove('visible');
     iframeEl.classList.add('hidden');
     fallbackEl.classList.remove('visible');
   }
 
-  function clearIframeTimer() {
+  function clearIframeTimer(): void {
     if (state.iframeLoadTimer) {
       clearTimeout(state.iframeLoadTimer);
       state.iframeLoadTimer = null;
     }
   }
 
-  function clearIframeVerifyTimer() {
+  function clearIframeVerifyTimer(): void {
     if (iframeVerifyTimer) {
       clearTimeout(iframeVerifyTimer);
       iframeVerifyTimer = null;
     }
   }
 
-  function toggleSettings() {
+  // --- Settings panel ---
+
+  function toggleSettings(): void {
     if (state.settingsOpen) {
       closeSettings();
       return;
@@ -651,28 +732,24 @@ interface SidebarState {
     openSettings();
   }
 
-  function openSettings() {
+  function openSettings(): void {
     closePanel();
     state.settingsOpen = true;
     settingsPanelEl.classList.add('open');
-    if (settingsButtonEl) {
-      settingsButtonEl.classList.add('active');
-    }
+    settingsButtonEl?.classList.add('active');
     updateSettingsControls();
     renderSettingsPinsList();
     applyLayoutClasses();
   }
 
-  function closeSettings() {
+  function closeSettings(): void {
     state.settingsOpen = false;
     settingsPanelEl.classList.remove('open');
-    if (settingsButtonEl) {
-      settingsButtonEl.classList.remove('active');
-    }
+    settingsButtonEl?.classList.remove('active');
     applyLayoutClasses();
   }
 
-  function updateSettingsControls() {
+  function updateSettingsControls(): void {
     settingsWidthInputEl.value = String(state.panelWidth);
     settingsWidthValueEl.textContent = `${state.panelWidth}px`;
 
@@ -692,12 +769,12 @@ interface SidebarState {
     updateCompanionHeightControlVisibility();
   }
 
-  function updateCompanionHeightControlVisibility() {
+  function updateCompanionHeightControlVisibility(): void {
     const showFixedHeight = settingsCompanionHeightModeEl.value === 'fixed';
     settingsCompanionHeightRowEl.classList.toggle('hidden', !showFixedHeight);
   }
 
-  function renderSettingsPinsList() {
+  function renderSettingsPinsList(): void {
     settingsPinsListEl.innerHTML = '';
     settingsDraggedIndex = null;
 
@@ -748,7 +825,7 @@ interface SidebarState {
         li.classList.remove('drag-over');
       });
 
-      li.addEventListener('drop', async (event) => {
+      li.addEventListener('drop', (event) => {
         event.preventDefault();
         li.classList.remove('drag-over');
 
@@ -765,32 +842,34 @@ interface SidebarState {
         settingsDraggedIndex = null;
         renderPinButtons();
         renderSettingsPinsList();
-        await saveAndBroadcast();
+        void saveAndBroadcast();
       });
 
       li.querySelector('.settings-pin-delete')!.addEventListener('mousedown', (event) => {
         event.stopPropagation();
       });
 
-      li.querySelector('.settings-pin-delete')!.addEventListener('click', async () => {
+      li.querySelector('.settings-pin-delete')!.addEventListener('click', () => {
         state.pins.splice(index, 1);
         state.pins.forEach((entry, entryIndex) => {
           entry.order = entryIndex;
         });
+
         if (state.activePinId === pin.id) {
           state.activePinId = null;
           closePanel();
         }
+
         renderPinButtons();
         renderSettingsPinsList();
-        await saveAndBroadcast();
+        void saveAndBroadcast();
       });
 
       settingsPinsListEl.appendChild(li);
     });
   }
 
-  async function addPinFromSettings(formData: FormData) {
+  async function addPinFromSettings(formData: FormData): Promise<void> {
     const name = String(formData.get('pinName') ?? '').trim();
     const url = String(formData.get('pinUrl') ?? '').trim();
     const iconUrl = String(formData.get('pinIconUrl') ?? '').trim();
@@ -799,7 +878,7 @@ interface SidebarState {
       return;
     }
 
-    let parsedUrl;
+    let parsedUrl: URL;
     try {
       parsedUrl = new URL(url);
     } catch {
@@ -821,7 +900,7 @@ interface SidebarState {
     await saveAndBroadcast();
   }
 
-  async function resetToDefaults() {
+  async function resetToDefaults(): Promise<void> {
     if (!window.confirm('Reset all pins and settings to defaults?')) {
       return;
     }
@@ -844,7 +923,7 @@ interface SidebarState {
     renderSettingsPinsList();
   }
 
-  async function saveAndBroadcast() {
+  async function saveAndBroadcast(): Promise<void> {
     state.settings = { ...state.settings, panelWidth: state.panelWidth };
     await chrome.storage.sync.set({ pins: state.pins, settings: state.settings });
     await chrome.runtime.sendMessage({
@@ -854,50 +933,12 @@ interface SidebarState {
     });
   }
 
-  function resolveIconUrl(iconUrl: string) {
-    if (!iconUrl) {
-      return '';
-    }
-    if (iconUrl.startsWith('http')) {
-      return iconUrl;
-    }
-    return chrome.runtime.getURL(iconUrl);
-  }
-
-  function escapeHtml(text: string) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-  }
-
-  function escapeAttr(text: string) {
-    return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
-  function closePanel() {
-    state.panelOpen = false;
-    panelEl.classList.remove('open');
-    embedFailureHandled = false;
-    embedFailureInFlight = null;
-    iframeVerifyGeneration += 1;
-    clearIframeTimer();
-    clearIframeVerifyTimer();
-    hideAllPanelViews();
-    iframeEl.src = 'about:blank';
-    applyLayoutClasses();
-  }
-
-  function refreshActivePin() {
-    const pin = getActivePin();
-    if (pin && state.panelOpen) {
-      openPanelForPin(pin);
-    }
-  }
+  // --- Companion window ---
 
   async function openCompanionForPin(
     pin: Pin,
     options: { closePanelOnOpen?: boolean } = {}
-  ) {
+  ): Promise<CompanionOpenResult | { ok: false; error: string }> {
     const { closePanelOnOpen = false } = options;
 
     try {
@@ -927,18 +968,20 @@ interface SidebarState {
     }
   }
 
-  function openActivePinInCompanion() {
+  function openActivePinInCompanion(): void {
     const pin = getActivePin();
     if (pin) {
-      openCompanionForPin(pin, { closePanelOnOpen: true });
+      void openCompanionForPin(pin, { closePanelOnOpen: true });
     }
   }
 
-  function getActivePin() {
+  // --- Layout and visibility ---
+
+  function getActivePin(): Pin | null {
     return state.pins.find((p) => p.id === state.activePinId) ?? null;
   }
 
-  function togglePanel() {
+  function togglePanel(): void {
     if (state.panelOpen) {
       closePanel();
       return;
@@ -950,20 +993,19 @@ interface SidebarState {
     }
   }
 
-  function setSidebarHidden(hidden: boolean) {
+  function setSidebarHidden(hidden: boolean): void {
     state.sidebarHidden = hidden;
     applySidebarVisibility();
   }
 
-  function applySidebarVisibility() {
+  function applySidebarVisibility(): void {
     const root = shadowRoot?.querySelector('.sidebar-root');
-    if (root) {
-      root.classList.toggle('hidden', state.sidebarHidden);
-    }
+    root?.classList.toggle('hidden', state.sidebarHidden);
     applyLayoutClasses();
   }
 
-  function applyLayoutClasses() {
+  /** Sets document-level classes that drive page-shift CSS on the host page. */
+  function applyLayoutClasses(): void {
     const html = document.documentElement;
     html.classList.remove('gx-sidebar-strip-visible', 'gx-sidebar-open', 'gx-sidebar-hidden');
 
@@ -979,7 +1021,9 @@ interface SidebarState {
     }
   }
 
-  function registerMessageListener() {
+  // --- Runtime messaging ---
+
+  function registerMessageListener(): void {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.action === 'setSidebarHidden') {
         setSidebarHidden(Boolean(message.hidden));
@@ -993,16 +1037,20 @@ interface SidebarState {
 
       if (message.action === 'pinsUpdated') {
         state.pins = (message.pins ?? state.pins).slice().sort((a: Pin, b: Pin) => a.order - b.order);
+
         if (message.settings) {
           state.settings = { ...state.settings, ...message.settings };
           state.panelWidth = state.settings.panelWidth ?? state.panelWidth;
           setCssVariables();
         }
+
         renderPinButtons();
+
         if (state.settingsOpen) {
           updateSettingsControls();
           renderSettingsPinsList();
         }
+
         if (state.panelOpen) {
           const stillExists = state.pins.some((p) => p.id === state.activePinId);
           if (!stillExists) {
@@ -1010,6 +1058,7 @@ interface SidebarState {
             state.activePinId = null;
           }
         }
+
         sendResponse({ ok: true });
       }
 
@@ -1034,7 +1083,25 @@ interface SidebarState {
     });
   }
 
-  function clamp(value: number, min: number, max: number) {
-    return Math.min(max, Math.max(min, value));
+  // --- Utilities ---
+
+  function resolveIconUrl(iconUrl: string): string {
+    if (!iconUrl) {
+      return '';
+    }
+    if (iconUrl.startsWith('http')) {
+      return iconUrl;
+    }
+    return chrome.runtime.getURL(iconUrl);
+  }
+
+  function escapeHtml(text: string): string {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function escapeAttr(text: string): string {
+    return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 })();

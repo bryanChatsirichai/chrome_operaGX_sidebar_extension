@@ -1,3 +1,7 @@
+/**
+ * Service worker: extension lifecycle, toolbar toggle, and message routing
+ * between popup, content scripts, and the companion window manager.
+ */
 import {
   gxCloseCompanion,
   gxIsCompanionWindow,
@@ -16,6 +20,8 @@ import {
 } from './lib/storage';
 import type { Pin, Settings } from './lib/types';
 
+// --- Extension lifecycle ---
+
 chrome.runtime.onInstalled.addListener(async () => {
   await gxInitializeStorage();
   await gxRestoreCompanionState();
@@ -24,6 +30,8 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(async () => {
   await gxRestoreCompanionState();
 });
+
+// --- Toolbar icon: show/hide sidebar ---
 
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab.id || !isInjectableUrl(tab.url)) {
@@ -37,6 +45,7 @@ chrome.action.onClicked.addListener(async (tab) => {
   try {
     await chrome.tabs.sendMessage(tab.id, { action: 'setSidebarHidden', hidden });
   } catch {
+    // Content script not loaded yet — inject and retry on next toggle.
     try {
       const sidebarScript = chrome.runtime.getManifest().content_scripts?.[0]?.js?.[0];
       if (!sidebarScript) {
@@ -54,6 +63,8 @@ chrome.action.onClicked.addListener(async (tab) => {
 
   await broadcastToAllTabs({ action: 'setSidebarHidden', hidden });
 });
+
+// --- Runtime message handlers ---
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'openTab' && message.url) {
@@ -174,6 +185,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
+// --- Helpers ---
+
+/** Returns true for standard web pages where content scripts can run. */
 function isInjectableUrl(url: string | undefined): boolean {
   if (!url) {
     return false;
@@ -187,6 +201,7 @@ function isInjectableUrl(url: string | undefined): boolean {
   }
 }
 
+/** Sends a message to every injectable tab, ignoring tabs without the content script. */
 async function broadcastToAllTabs(message: Record<string, unknown>): Promise<void> {
   const tabs = await chrome.tabs.query({});
   await Promise.all(

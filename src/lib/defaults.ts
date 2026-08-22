@@ -1,5 +1,6 @@
 import type { CompanionLayout, Pin, Settings, StorageData } from './types';
 
+/** Central constants for layout limits, default pins, and embed detection. */
 export const GX_DEFAULTS = {
   STRIP_WIDTH: 48,
   PANEL_WIDTH: 400,
@@ -13,6 +14,7 @@ export const GX_DEFAULTS = {
   COMPANION_HEIGHT_MODES: ['match', 'fixed'] as const,
   IFRAME_LOAD_TIMEOUT_MS: 5000,
 
+  /** Domains known to block iframe embedding; companion window is used instead. */
   BLOCKED_DOMAINS: [
     'discord.com',
     'web.whatsapp.com',
@@ -105,10 +107,12 @@ export const GX_DEFAULTS = {
   } satisfies Settings
 } as const;
 
+/** Clamps a numeric value to an inclusive [min, max] range. */
 export function gxClamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/** Type guard for a layout object already in normalized companion form. */
 function gxIsNormalizedCompanionLayout(value: unknown): value is CompanionLayout {
   return (
     typeof value === 'object' &&
@@ -119,7 +123,13 @@ function gxIsNormalizedCompanionLayout(value: unknown): value is CompanionLayout
   );
 }
 
-export function gxGetCompanionLayoutFromSettings(settings: Partial<Settings & CompanionLayout> = {}): CompanionLayout {
+/**
+ * Converts partial settings or a raw layout into clamped companion window dimensions.
+ * Accepts either Settings field names or normalized CompanionLayout keys.
+ */
+export function gxGetCompanionLayoutFromSettings(
+  settings: Partial<Settings & CompanionLayout> = {}
+): CompanionLayout {
   const defaults = GX_DEFAULTS.DEFAULT_SETTINGS;
 
   if (gxIsNormalizedCompanionLayout(settings)) {
@@ -144,6 +154,7 @@ export function gxGetCompanionLayoutFromSettings(settings: Partial<Settings & Co
   )
     ? (settings.companionHeightMode as (typeof GX_DEFAULTS.COMPANION_HEIGHT_MODES)[number])
     : defaults.companionHeightMode;
+
   const position = GX_DEFAULTS.COMPANION_POSITIONS.includes(
     settings.companionPosition as (typeof GX_DEFAULTS.COMPANION_POSITIONS)[number]
   )
@@ -166,17 +177,19 @@ export function gxGetCompanionLayoutFromSettings(settings: Partial<Settings & Co
   };
 }
 
+/** Returns true when the URL hostname matches a known iframe-blocked domain. */
 export function gxIsDomainBlocked(url: string): boolean {
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, '');
     return GX_DEFAULTS.BLOCKED_DOMAINS.some(
-      (domain) => hostname === domain || hostname.endsWith('.' + domain)
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`)
     );
   } catch {
     return false;
   }
 }
 
+/** Returns a fresh copy of the factory-default storage snapshot. */
 export function gxGetDefaultStorageData(): StorageData {
   return {
     pins: GX_DEFAULTS.DEFAULT_PINS.map((pin) => ({ ...pin })),

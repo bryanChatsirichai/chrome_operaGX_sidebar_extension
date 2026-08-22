@@ -2,10 +2,12 @@ import { defineConfig } from 'vite';
 import { crx } from '@crxjs/vite-plugin';
 import manifest from './manifest.json';
 
+/** Vite build config for the Chrome extension via CRXJS. */
 export default defineConfig({
   plugins: [crx({ manifest })],
   css: {
     modules: {
+      // Preserve original class names so shadow DOM HTML matches SCSS selectors.
       generateScopedName: '[local]'
     }
   },
