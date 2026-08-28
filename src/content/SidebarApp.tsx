@@ -10,7 +10,7 @@ import { applyLayoutClasses, setCssVariables } from './sidebarUtils';
 const EMBED_BLOCKED_PATTERN =
   /refused to connect|content is blocked|contact the site owner|can't be embedded|cannot be displayed|x-frame-options|frame-ancestors|failed to load|err_blocked_by/i;
 
-const IFRAME_VERIFY_MAX_ATTEMPTS = 3;
+const IFRAME_VERIFY_MAX_ATTEMPTS = 1;
 const IFRAME_VERIFY_RETRY_MS = 100;
 
 export type PanelView = 'idle' | 'loading' | 'iframe' | 'fallback';
@@ -54,6 +54,7 @@ export function SidebarApp({
 
   const panelOpenRef = useRef(panelOpen);
   const activePinIdRef = useRef(activePinId);
+  const pinOpenGenerationRef = useRef(0);
   const handlePinClickRef = useRef<(pin: Pin) => void>(() => {});
 
   panelOpenRef.current = panelOpen;
@@ -211,13 +212,14 @@ export function SidebarApp({
       if (iframeRef.current) {
         iframeRef.current.src = 'about:blank';
       }
-      setPanelView('loading');
 
       embedFailureInFlightRef.current = (async () => {
         const response = await openCompanionForPin(pin, { closePanelOnOpen: true });
         if (response?.ok && response.open) {
           return response;
         }
+        setPanelOpen(true);
+        panelOpenRef.current = true;
         showFallbackUI(pin);
         return response;
       })().finally(() => {
@@ -225,6 +227,30 @@ export function SidebarApp({
       });
 
       return embedFailureInFlightRef.current;
+    },
+    [clearIframeTimer, clearIframeVerifyTimer, openCompanionForPin, showFallbackUI]
+  );
+
+  const openCompanionDirectly = useCallback(
+    async (pin: Pin) => {
+      if (panelOpenRef.current) {
+        clearIframeTimer();
+        clearIframeVerifyTimer();
+        if (iframeRef.current) {
+          iframeRef.current.src = 'about:blank';
+        }
+        setPanelOpen(false);
+        panelOpenRef.current = false;
+        setPanelView('idle');
+      }
+
+      const response = await openCompanionForPin(pin);
+      if (!response?.ok || !response.open) {
+        setPanelOpen(true);
+        panelOpenRef.current = true;
+        showFallbackUI(pin);
+      }
+      return response;
     },
     [clearIframeTimer, clearIframeVerifyTimer, openCompanionForPin, showFallbackUI]
   );
@@ -339,41 +365,21 @@ export function SidebarApp({
       clearIframeVerifyTimer();
 
       if (iframeRef.current) {
-        iframeRef.current.src = 'about:blank';
+        iframeRef.current.src = pin.url;
       }
 
-      void (async () => {
-        const embedAllowed = await queryEmbedAllowed(pin.url);
+      iframeLoadTimerRef.current = setTimeout(() => {
         if (
-          pin.id !== activePinIdRef.current ||
-          !panelOpenRef.current ||
-          embedFailureHandledRef.current
+          !embedFailureHandledRef.current &&
+          !embedFailureInFlightRef.current &&
+          panelOpenRef.current &&
+          pin.id === activePinIdRef.current
         ) {
-          return;
-        }
-
-        if (!embedAllowed) {
           void handleEmbedFailure(pin);
-          return;
         }
-
-        if (iframeRef.current) {
-          iframeRef.current.src = pin.url;
-        }
-
-        iframeLoadTimerRef.current = setTimeout(() => {
-          if (
-            !embedFailureHandledRef.current &&
-            !embedFailureInFlightRef.current &&
-            panelOpenRef.current &&
-            pin.id === activePinIdRef.current
-          ) {
-            void handleEmbedFailure(pin);
-          }
-        }, GX_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS);
-      })();
+      }, GX_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS);
     },
-    [clearIframeTimer, clearIframeVerifyTimer, handleEmbedFailure, queryEmbedAllowed]
+    [clearIframeTimer, clearIframeVerifyTimer, handleEmbedFailure]
   );
 
   const closePanel = useCallback(() => {
@@ -400,14 +406,44 @@ export function SidebarApp({
         return;
       }
 
+      if (activePinId === pin.id && !panelOpen) {
+        void chrome.runtime.sendMessage({ action: 'closeCompanion' }).then(() => {
+          setActivePinId(null);
+          activePinIdRef.current = null;
+        });
+        return;
+      }
+
+      const generation = ++pinOpenGenerationRef.current;
       setActivePinId(pin.id);
       activePinIdRef.current = pin.id;
-      setPanelOpen(true);
-      panelOpenRef.current = true;
-      openPanelForPin(pin);
       void chrome.runtime.sendMessage({ action: 'saveLastActivePin', pinId: pin.id });
+
+      void (async () => {
+        const embedAllowed = await queryEmbedAllowed(pin.url);
+        if (generation !== pinOpenGenerationRef.current || pin.id !== activePinIdRef.current) {
+          return;
+        }
+
+        if (!embedAllowed) {
+          await openCompanionDirectly(pin);
+          return;
+        }
+
+        setPanelOpen(true);
+        panelOpenRef.current = true;
+        openPanelForPin(pin);
+      })();
     },
-    [activePinId, closePanel, openPanelForPin, panelOpen, settingsOpen]
+    [
+      activePinId,
+      closePanel,
+      openCompanionDirectly,
+      openPanelForPin,
+      panelOpen,
+      queryEmbedAllowed,
+      settingsOpen
+    ]
   );
 
   handlePinClickRef.current = handlePinClick;
@@ -752,7 +788,7 @@ export function SidebarApp({
         resizeDragging={resizeDragging}
         onClose={closePanel}
         onRefresh={() => activePin && openPanelForPin(activePin)}
-        onOpenCompanion={() => activePin && void openCompanionForPin(activePin, { closePanelOnOpen: true })}
+        onOpenCompanion={() => activePin && void openCompanionDirectly(activePin)}
         onIframeLoad={handleIframeLoad}
         onIframeError={handleIframeError}
         onResizeStart={handleResizeStart}

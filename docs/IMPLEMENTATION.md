@@ -8,8 +8,8 @@ GX Sidebar is a **Chrome Manifest V3 extension** that mimics Opera GX’s sideba
 
 **Primary UX:**
 1. A fixed **48px icon strip** on the left of every `http(s)` page (hideable via toolbar icon).
-2. An expandable **in-page panel** (300–600px) that loads pinned sites in an `<iframe>`.
-3. When iframe embedding fails, a **single companion popup window** opens beside the main browser window.
+2. An expandable **in-page panel** (300–600px) that loads embeddable pinned sites in an `<iframe>`.
+3. When a site blocks iframe embedding, a **single companion popup window** opens directly beside the main browser window — the in-page panel does not open first.
 4. **Inline settings** (gear icon) to add/edit/remove/reorder pins, adjust panel width, and configure the companion window.
 
 ---
@@ -67,7 +67,7 @@ Sites like X, Instagram, and Discord send `X-Frame-Options` / CSP `frame-ancesto
 | Path | Role |
 |------|------|
 | `manifest.json` | MV3 config; `@crxjs/vite-plugin` builds to `dist/` |
-| `src/background.ts` | Service worker: messaging hub, companion routing, sidebar hide toggle |
+| `src/background.ts` | Service worker: messaging hub, embed preflight cache, companion routing, sidebar hide toggle |
 | `src/content/main.tsx` | Entry: bootstrap, shadow DOM mount, React root |
 | `src/content/SidebarApp.tsx` | Main UI state: pins, panel, iframe verification, settings |
 | `src/content/components/IconStrip.tsx` | Pin buttons + gear |
@@ -194,18 +194,33 @@ Detection: `gxIsCompanionWindowAsync()` in `lib/companion.ts` checks in-memory s
 Click pin
   → close settings if open
   → if same pin + panel open → closePanel()
-  → else open panel, set activePinId, openPanelForPin(pin)
+  → if same pin + companion open (panel closed) → closeCompanion()
+  → set activePinId, save last active pin
+  → queryEmbedAllowed(pin.url)     ← preflight BEFORE opening panel
+       ├─ blocked → openCompanionDirectly(pin)   ← panel never opens
+       └─ allowed → setPanelOpen(true), openPanelForPin(pin)
 ```
 
-Always attempts an **in-page iframe** when embedding is allowed. Blocked sites skip the iframe and open the companion window instead (see embed detection below).
+**Design goal:** blocked sites must not open the sidebar panel, fail, close, then open the companion. Preflight runs while the panel stays closed; only embeddable sites open the in-page panel.
+
+`pinOpenGenerationRef` cancels stale preflight results if the user clicks another pin before the check finishes.
 
 ### 2. Open panel (`openPanelForPin`)
 
+Only called after preflight confirms embedding is allowed.
+
 1. Reset embed-failure guards (`embedFailureHandled`, `embedFailureInFlight`, verify generation).
-2. Show loading spinner.
-3. **Preflight embed check** — `queryEmbedAllowed()` calls background `checkEmbedAllowed` (header fetch). If blocked, go straight to `handleEmbedFailure` without loading the iframe.
-4. Otherwise set `iframe.src = pin.url` and start **5s timeout** → `handleEmbedFailure` if still failing.
-5. On iframe `load` → `startIframeVerification`.
+2. Show loading spinner and set `iframe.src = pin.url`.
+3. Start **5s timeout** → `handleEmbedFailure` if load/verification still failing (runtime fallback).
+4. On iframe `load` → `startIframeVerification`.
+
+### 2b. Open companion directly (`openCompanionDirectly`)
+
+Used when preflight determines embedding is blocked, and for the manual “Open companion panel” fallback button.
+
+1. Close any open in-page panel quietly (no loading flash).
+2. Call `openCompanionForPin(pin)` — opens or navigates the single companion window.
+3. If companion fails, open the panel with `showFallbackUI` so the user can retry manually.
 
 ### 3. Iframe embed detection
 
@@ -213,7 +228,7 @@ Embedding is validated in **three layers** (general — not per-site hardcoding)
 
 #### Layer A — Domain fast-path (`gxIsDomainBlocked`)
 
-Hostname matched against `BLOCKED_DOMAINS` in `defaults.ts`. Skips iframe attempt immediately. List includes social/streaming/AI sites (Twitch, ChatGPT, Claude, Discord, X, etc.).
+Hostname matched against `BLOCKED_DOMAINS` in `defaults.ts`. Returns `embedAllowed: false` immediately without header fetch. List includes Twitch, Spotify, YouTube, ChatGPT, Claude, Discord, X, etc.
 
 #### Layer B — Header preflight (`lib/embed-check.ts`)
 
@@ -224,8 +239,8 @@ Background service worker fetches the pin URL (HEAD, GET fallback) and parses:
 Results cached per hostname for 5 minutes (`embedAllowedCache` in `background.ts`).
 
 Called:
-- Before iframe load in `openPanelForPin`
-- Before declaring success in `finalizeIframeSuccess`
+- **On pin click** in `handlePinClick` via `queryEmbedAllowed()` — before `setPanelOpen(true)`
+- Before declaring iframe success in `finalizeIframeSuccess` (runtime re-check)
 
 #### Layer C — Runtime iframe verification (`verifyIframeEmbed`)
 
@@ -237,16 +252,20 @@ Detection paths:
 - **`about:blank` stuck** after max retries → treat as failure (no infinite loading)
 - Cross-origin opaque frame (`location.href` throws → `null`) → run header check via `finalizeIframeSuccess` instead of assuming success
 
-**Important bug this fixes:** Sites like Twitch previously showed “refused to connect” inside the panel because cross-origin error pages are unreadable from the parent, so verification incorrectly called `showIframeLoaded()`. Header preflight + `finalizeIframeSuccess` route these to the companion window.
+**Important:** Sites like Twitch previously showed “refused to connect” inside the panel because cross-origin error pages are unreadable from the parent, so verification incorrectly called `showIframeLoaded()`. Preflight on pin click + `finalizeIframeSuccess` route blocked sites to the companion window without opening the panel.
 
 **Success** → `showIframeLoaded()`:
 - Hides loading, shows iframe
 - Sends `closeCompanion` (background skips if sender is companion window)
 
-**Failure** → `handleEmbedFailure()` (single-flight guarded):
-- Opens/navigates companion via `openCompanionForPin`
+**Preflight blocked** → `openCompanionDirectly()`:
+- Companion opens; sidebar panel stays closed
+- Pin highlighted in icon strip
+
+**Runtime failure** (panel already open) → `handleEmbedFailure()` (single-flight guarded):
+- Opens/navigates companion via `openCompanionForPin({ closePanelOnOpen: true })`
 - Closes in-page panel on success
-- Shows manual fallback UI if companion also fails
+- Shows manual fallback UI in panel if companion also fails
 
 ### 4. Companion window (`lib/companion.ts`)
 
@@ -272,7 +291,10 @@ Else → chrome.windows.create({ type: 'popup', url, ...bounds })
 - Iframe succeeds → `closeCompanion` closes the popup
 
 **When user opens blocked pin while companion already shows another site**:
-- Embed fails → companion tab **navigates** to new URL (no second window)
+- Preflight fails → `openCompanionDirectly` navigates companion tab to new URL (no second window, no panel flash)
+
+**When user opens blocked pin while embeddable panel is open**:
+- `openCompanionDirectly` closes the panel first, then opens/navigates companion
 
 **When main browser window closes**:
 - Companion window is also closed (`windows.onRemoved` listener)
@@ -339,12 +361,13 @@ All async handlers return `true` from `onMessage` and call `sendResponse` in a p
 
 | Concern | Purpose |
 |---------|---------|
-| `handlePinClick` | Main entry for pin clicks |
-| `openPanelForPin` | Preflight embed check, then iframe load |
+| `handlePinClick` | Preflight on click; routes to panel or companion |
 | `queryEmbedAllowed` | Domain list + `checkEmbedAllowed` message |
+| `openCompanionDirectly` | Open companion without opening sidebar panel |
+| `openPanelForPin` | Load iframe (only after preflight passes) |
 | `verifyIframeEmbed` | Poll-based runtime embed detection |
 | `finalizeIframeSuccess` | Header re-check before showing iframe |
-| `handleEmbedFailure` | Single-flight companion fallback |
+| `handleEmbedFailure` | Runtime fallback when panel is already open |
 | `quickPinCurrentPage` | One-click add of current page tab |
 | `showIframeLoaded` | Success path + close companion |
 | `openCompanionForPin` | Send `openCompanion` with current companion settings |
@@ -398,8 +421,9 @@ All async handlers return `true` from `onMessage` and call `sendResponse` in a p
 | Multiple companion windows | `companionOperation`, `companionCreateInProgress`, session persistence |
 | Multiple `handleEmbedFailure` calls | `embedFailureHandled`, `embedFailureInFlight` |
 | Stale iframe verify timers | `iframeVerifyGeneration` incremented on each new load |
-| Cross-origin false success | Header preflight + `finalizeIframeSuccess` before `showIframeLoaded` |
-| Pin click vs async preflight race | `activePinIdRef` / `panelOpenRef` synced synchronously in `handlePinClick` |
+| Cross-origin false success | Preflight on pin click + `finalizeIframeSuccess` before `showIframeLoaded` |
+| Pin click vs async preflight race | `pinOpenGenerationRef` + `activePinIdRef` cancel stale results |
+| Panel flash on blocked sites | `openCompanionDirectly` — preflight before `setPanelOpen(true)` |
 | Companion page opening another companion | Sidebar not injected in companion window |
 | MV3 service worker sleep | Pass `url` directly to `chrome.windows.create` (not create-then-navigate) |
 | Duplicate create retries | Max 2 attempts in `gxCreateCompanionWindow` (positioned, then plain) |
@@ -421,11 +445,13 @@ All async handlers return `true` from `onMessage` and call `sendResponse` in a p
 
 | Pin | Expected behavior |
 |-----|-------------------|
-| **Example** (`example.com`) | Loads in iframe panel; closes companion if open |
-| **Twitch / ChatGPT / Claude** | Preflight or verify fails → companion opens; no “refused to connect” in panel |
+| **Example** (`example.com`) | Preflight passes → panel opens with iframe; closes companion if open |
+| **Twitch / ChatGPT / Claude** | Preflight fails → companion opens directly; panel never opens; no “refused to connect” |
 | **X / Instagram / Discord** | Same as above — companion popup with full site |
-| Switch X → Instagram (companion open) | Same companion navigates, no second window |
-| Open Example while companion open | Companion closes, panel shows example.com |
+| Click same pin (companion open) | Companion closes, pin deselected |
+| Switch X → Instagram (companion open) | Same companion navigates, no second window, no panel flash |
+| Open Example while companion open | Panel opens with iframe; companion closes on success |
+| Switch Example panel → Twitch | Panel closes; companion opens directly |
 | **Settings → Pin current page** | Adds current tab URL/title/favicon to strip |
 | Toolbar click | Hides/shows strip; page margin resets when hidden |
 | Companion position `right` | Follows main window when moved/resized |
@@ -450,7 +476,8 @@ Add hostname to `BLOCKED_DOMAINS` in `src/lib/defaults.ts` — skips iframe imme
 
 1. Confirm `checkEmbedAllowed` returns `embedAllowed: false` for the URL (service worker console).
 2. Check hostname is in `BLOCKED_DOMAINS` or CSP/X-Frame-Options blocks embedding.
-3. Verify `finalizeIframeSuccess` runs before `showIframeLoaded` (not a stale build).
+3. Verify `handlePinClick` calls `openCompanionDirectly` (not `openPanelForPin`) when preflight fails.
+4. Verify `finalizeIframeSuccess` runs before `showIframeLoaded` for runtime checks (not a stale build).
 
 ### Change companion position defaults
 
@@ -471,4 +498,4 @@ Edit `DEFAULT_SETTINGS.companionPosition` in `src/lib/defaults.ts`, or adjust `g
 
 ---
 
-*Last updated to reflect: header-based embed preflight (`embed-check.ts`), Twitch/iframe “refused to connect” fix, ChatGPT/Claude default pins, pin-current-page settings UX.*
+*Last updated to reflect: preflight-first pin click flow (`openCompanionDirectly`), `embed-check.ts` header preflight, Twitch/Spotify/YouTube in `BLOCKED_DOMAINS`, companion toggle on re-click.*

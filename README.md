@@ -6,8 +6,8 @@ A Chrome extension that injects an Opera GX-style sidebar into web pages: a vert
 
 - Persistent 48px icon strip on the left edge of every page (hideable via toolbar icon)
 - Expandable panel (300–600px, resizable) that loads pinned sites in an iframe when allowed
-- **Companion popup window** for sites that block iframe embedding — opens automatically instead of showing “refused to connect” in the panel
-- **Smart embed detection** — checks `X-Frame-Options` / CSP headers plus a known-blocked domain list (Twitch, ChatGPT, Claude, Discord, X, etc.)
+- **Companion popup window** for sites that block iframe embedding — opens directly beside the browser window (sidebar panel stays closed)
+- **Smart embed detection** — preflight check before opening the panel; uses `X-Frame-Options` / CSP headers plus a known-blocked domain list (Twitch, Spotify, YouTube, ChatGPT, Claude, Discord, X, etc.)
 - 11 default apps: Discord, WhatsApp, Telegram, Twitch, Spotify, X, Instagram, Messenger, ChatGPT, Claude, and Example (iframe test)
 - **Pin current page** from settings — one-click add with title, URL, and favicon
 - Add and edit custom pins with name, URL, and optional icon
@@ -28,29 +28,31 @@ A Chrome extension that injects an Opera GX-style sidebar into web pages: a vert
    ```
 5. Visit any website — the icon strip appears on the left
 
-> **Existing installs:** New default pins (ChatGPT, Claude) and embed fixes apply after **Settings → Reset to defaults**, or on first install.
+> **Existing installs:** New default pins and embed/companion behavior improvements apply after **Settings → Reset to defaults**, or on first install. Reload the extension after updating.
 
 ## Usage
 
 | Action | How |
 |--------|-----|
-| Open an app | Click its icon in the left strip |
-| Close panel | Click the same icon again, or the ✕ button |
+| Open an embeddable app | Click its icon — sidebar panel opens and loads the site |
+| Open a blocked app (Twitch, Discord, etc.) | Click its icon — companion popup opens directly; sidebar panel does **not** open |
+| Close panel | Click the same icon again, or the ✕ button in the panel header |
+| Close companion | Click the same icon again (when only the companion is open) |
 | Hide/show sidebar | Click the extension toolbar icon |
 | Refresh app | Click the refresh button in the panel header |
 | Resize panel | Drag the handle on the right edge of the panel, or use the width slider in settings |
 | Settings | Click the gear icon at the bottom of the strip, or right-click the extension → Options |
 | Pin current website | Settings → **Pin current page** (or **+ Add website** to pre-fill the form) |
-| Blocked site (Twitch, ChatGPT, etc.) | Companion popup opens automatically beside the browser window |
 
 ## How blocked sites work
 
-Many sites refuse to load inside iframes. The extension handles this in two steps:
+Many sites refuse to load inside iframes. The extension decides **before opening the sidebar panel**:
 
-1. **Before loading** — the background worker fetches the site’s headers and checks `X-Frame-Options` and CSP `frame-ancestors`.
-2. **If blocked** — skips the iframe and opens the **companion popup** (a narrow browser window with the full site). You never see Chrome’s “refused to connect” error inside the sidebar panel.
+1. **Preflight** — on pin click, the background worker checks a known-blocked domain list, then fetches the site’s headers (`X-Frame-Options`, CSP `frame-ancestors`).
+2. **If embeddable** — the in-page sidebar panel opens and loads the site in an iframe.
+3. **If blocked** — the **companion popup** opens directly (a narrow browser window with the full site). The sidebar panel never opens, so you never see Chrome’s “refused to connect” flash inside the panel.
 
-Sites like **Example.com** still load normally in the in-page panel.
+Sites like **Example.com** load normally in the in-page panel. **Twitch, Discord, ChatGPT**, and similar pins skip the panel entirely and go straight to the companion window.
 
 ## Project Structure
 
@@ -100,7 +102,7 @@ After editing source files, reload the extension at `chrome://extensions` (load 
 ## Known Limitations
 
 - **In-page overlay, not browser chrome.** Chrome extensions cannot modify the area left of the address bar the way Opera GX does natively. This extension overlays the page viewport and shifts content with a CSS margin.
-- **Many sites block iframes.** Discord, Twitch, ChatGPT, Claude, WhatsApp, X, Instagram, and most major platforms refuse iframe embedding. The extension detects this via response headers and opens a **companion popup window** instead.
+- **Many sites block iframes.** Discord, Twitch, Spotify, YouTube, ChatGPT, Claude, WhatsApp, X, Instagram, and most major platforms refuse iframe embedding. The extension detects this via preflight (domain list + response headers) and opens a **companion popup window** directly — without opening the sidebar panel first.
 - **Companion is not docked.** Unlike Opera GX’s native sidebar, the companion is a standalone popup window. You can configure its size and position in settings.
 - **Shared browser session.** Both the iframe panel and companion window use your normal browser cookies/session.
 - **Page layout conflicts.** Sites with aggressive full-viewport layouts may not shift cleanly when the panel opens.
@@ -111,7 +113,7 @@ After editing source files, reload the extension at `chrome://extensions` (load 
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
-| `checkEmbedAllowed` | content → background | Header preflight before iframe load |
+| `checkEmbedAllowed` | content → background | Header preflight on pin click (before panel opens) |
 | `setSidebarHidden` | background → content | Hide/show icon strip via toolbar click |
 | `pinsUpdated` | background → content | Re-render icon strip after settings change |
 | `companionClosed` | background → content | Clear active pin when companion closes |
