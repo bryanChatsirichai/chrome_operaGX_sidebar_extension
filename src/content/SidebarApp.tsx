@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GX_DEFAULTS, gxClamp, gxIsDomainBlocked } from '../lib/defaults';
-import { parsePinUrl, reindexPins, resolveIconUrl } from '../lib/pin-utils';
+import { parsePinUrl, reindexPins, resolveIconUrl, getCurrentPagePinDefaults } from '../lib/pin-utils';
 import type { CompanionOpenResult, Pin, Settings } from '../lib/types';
 import { IconStrip } from './components/IconStrip';
 import { AppPanel } from './components/AppPanel';
@@ -137,10 +137,19 @@ export function SidebarApp({
           return response;
         }
 
-        setActivePinId(response.open ? pin.id : null);
+        if (response.open) {
+          setActivePinId(pin.id);
+          activePinIdRef.current = pin.id;
+        } else {
+          setActivePinId(null);
+          activePinIdRef.current = null;
+        }
 
-        if (closePanelOnOpen && response.open && panelOpen) {
+        if (closePanelOnOpen && response.open) {
+          clearIframeTimer();
+          clearIframeVerifyTimer();
           setPanelOpen(false);
+          panelOpenRef.current = false;
           setPanelView('idle');
         }
 
@@ -150,7 +159,7 @@ export function SidebarApp({
         return { ok: false, error: String(error) };
       }
     },
-    [panelOpen, settings]
+    [clearIframeTimer, clearIframeVerifyTimer, settings]
   );
 
   const showIframeLoaded = useCallback(() => {
@@ -334,7 +343,9 @@ export function SidebarApp({
       }
 
       setActivePinId(pin.id);
+      activePinIdRef.current = pin.id;
       setPanelOpen(true);
+      panelOpenRef.current = true;
       openPanelForPin(pin);
       void chrome.runtime.sendMessage({ action: 'saveLastActivePin', pinId: pin.id });
     },
@@ -376,6 +387,63 @@ export function SidebarApp({
     setEditingPinId(pin.id);
     setPinForm({ name: pin.name, url: pin.url, iconUrl: pin.iconUrl });
   }, []);
+
+  const pinCurrentPage = useCallback(() => {
+    setEditingPinId(null);
+    setPinForm(getCurrentPagePinDefaults());
+  }, []);
+
+  const isPinUrlDuplicate = useCallback(
+    (url: string, excludePinId?: string | null): boolean => {
+      const parsed = parsePinUrl(url);
+      if (!parsed) {
+        return false;
+      }
+
+      const normalized = parsed.href;
+      return pins.some((pin) => {
+        if (excludePinId && pin.id === excludePinId) {
+          return false;
+        }
+        try {
+          return new URL(pin.url).href === normalized;
+        } catch {
+          return false;
+        }
+      });
+    },
+    [pins]
+  );
+
+  const quickPinCurrentPage = useCallback(async () => {
+    const defaults = getCurrentPagePinDefaults();
+    const parsedUrl = parsePinUrl(defaults.url);
+
+    if (!parsedUrl) {
+      window.alert('This page cannot be pinned.');
+      return;
+    }
+
+    if (isPinUrlDuplicate(parsedUrl.href)) {
+      window.alert('This page is already pinned.');
+      return;
+    }
+
+    const nextPins = [
+      ...pins,
+      {
+        id: `custom-${Date.now()}`,
+        name: defaults.name,
+        url: parsedUrl.href,
+        iconUrl: defaults.iconUrl,
+        order: pins.length
+      }
+    ];
+
+    resetPinForm();
+    setPins(nextPins);
+    await saveAndBroadcast(nextPins, settings, panelWidth);
+  }, [isPinUrlDuplicate, panelWidth, pins, resetPinForm, saveAndBroadcast, settings]);
 
   const handleSavePin = useCallback(
     async (event: React.FormEvent) => {
@@ -643,6 +711,8 @@ export function SidebarApp({
         onClose={() => setSettingsOpen(false)}
         onPinFormChange={setPinForm}
         onSavePin={(e) => void handleSavePin(e)}
+        onPinCurrentPage={pinCurrentPage}
+        onQuickPinCurrentPage={() => void quickPinCurrentPage()}
         onCancelEdit={resetPinForm}
         onEditPin={beginEditPin}
         onDeletePin={(index) => void handleDeletePin(index)}

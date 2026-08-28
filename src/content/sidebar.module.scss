@@ -260,6 +260,83 @@ $gx-text-white: #fff;
     flex: 1;
   }
 
+  .settings-add-pin-btn {
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .settings-current-page-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    background: #111;
+    border: 1px solid $gx-border;
+    border-radius: 8px;
+  }
+
+  .settings-current-page-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .settings-current-page-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    object-fit: contain;
+    flex-shrink: 0;
+  }
+
+  .settings-current-page-icon-fallback {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: $gx-border;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: $gx-text-white;
+    flex-shrink: 0;
+  }
+
+  .settings-current-page-text {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .settings-current-page-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: $gx-text-white;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .settings-current-page-url {
+    font-size: 11px;
+    color: $gx-text-dim;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .settings-current-page-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .settings-current-page-actions .settings-btn {
+    flex: 1;
+  }
+
   .settings-form-cancel.hidden {
     display: none;
   }

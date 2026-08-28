@@ -4,12 +4,15 @@ A Chrome extension that injects an Opera GX-style sidebar into web pages: a vert
 
 ## Features
 
-- Persistent 48px icon strip on the left edge of every page
-- Expandable panel (300–600px, resizable) that loads pinned sites
-- 8 default apps: Discord, WhatsApp, Telegram, Twitch, Spotify, X, Instagram, Messenger
-- Add custom pins with name, URL, and optional icon
+- Persistent 48px icon strip on the left edge of every page (hideable via toolbar icon)
+- Expandable panel (300–600px, resizable) that loads pinned sites in an iframe when allowed
+- **Companion popup window** for sites that block iframe embedding — opens automatically instead of showing “refused to connect” in the panel
+- **Smart embed detection** — checks `X-Frame-Options` / CSP headers plus a known-blocked domain list (Twitch, ChatGPT, Claude, Discord, X, etc.)
+- 11 default apps: Discord, WhatsApp, Telegram, Twitch, Spotify, X, Instagram, Messenger, ChatGPT, Claude, and Example (iframe test)
+- **Pin current page** from settings — one-click add with title, URL, and favicon
+- Add and edit custom pins with name, URL, and optional icon
 - Drag-to-reorder pins in settings
-- Iframe-block detection with "Open in new tab" fallback
+- Configurable companion window: width, height (match browser or fixed), and screen position
 - Dark Opera GX-inspired theme
 - Settings sync across devices via `chrome.storage.sync`
 
@@ -25,6 +28,8 @@ A Chrome extension that injects an Opera GX-style sidebar into web pages: a vert
    ```
 5. Visit any website — the icon strip appears on the left
 
+> **Existing installs:** New default pins (ChatGPT, Claude) and embed fixes apply after **Settings → Reset to defaults**, or on first install.
+
 ## Usage
 
 | Action | How |
@@ -33,28 +38,49 @@ A Chrome extension that injects an Opera GX-style sidebar into web pages: a vert
 | Close panel | Click the same icon again, or the ✕ button |
 | Hide/show sidebar | Click the extension toolbar icon |
 | Refresh app | Click the refresh button in the panel header |
-| Resize panel | Drag the red handle on the right edge of the panel |
+| Resize panel | Drag the handle on the right edge of the panel, or use the width slider in settings |
 | Settings | Click the gear icon at the bottom of the strip, or right-click the extension → Options |
+| Pin current website | Settings → **Pin current page** (or **+ Add website** to pre-fill the form) |
+| Blocked site (Twitch, ChatGPT, etc.) | Companion popup opens automatically beside the browser window |
+
+## How blocked sites work
+
+Many sites refuse to load inside iframes. The extension handles this in two steps:
+
+1. **Before loading** — the background worker fetches the site’s headers and checks `X-Frame-Options` and CSP `frame-ancestors`.
+2. **If blocked** — skips the iframe and opens the **companion popup** (a narrow browser window with the full site). You never see Chrome’s “refused to connect” error inside the sidebar panel.
+
+Sites like **Example.com** still load normally in the in-page panel.
 
 ## Project Structure
 
 ```
 manifest.json              MV3 config (source; build outputs to dist/)
 src/
-  background.ts            Service worker (toggle, storage, messaging)
+  background.ts            Service worker (toggle, storage, messaging, embed preflight)
   content/
-    sidebar.ts             Shadow DOM sidebar injection
+    main.tsx               Bootstrap: shadow DOM mount, React root
+    SidebarApp.tsx         Main UI state and iframe/companion logic
+    sidebarUtils.ts        Page shift, layout classes, storage load
+    keyboardIsolation.ts   Keyboard event isolation for settings forms
+    components/
+      IconStrip.tsx        Pin buttons + settings gear
+      AppPanel.tsx         Iframe panel, loading/fallback views
+      SettingsPanel.tsx    Inline settings (pins, pin current page, companion)
     sidebar.module.scss    Opera GX dark theme (shadow DOM)
     page-shift.module.scss Page margin shift styles
   popup/
-    popup.html/ts          Settings page (pins, width)
+    popup.html/main.tsx    Options page entry
+    PopupApp.tsx           Full-page settings UI
     popup.module.scss      Options page styles
   lib/
     defaults.ts            Default pins, blocked domains, constants
+    embed-check.ts         Header-based iframe embed detection
     storage.ts             chrome.storage.sync helpers
     companion.ts           Companion popup window lifecycle
+    pin-utils.ts           Icon URLs, URL parsing, current-page pin defaults
     types.ts               Shared TypeScript types
-icons/                     Extension + app icons
+icons/apps/                Default pin SVG icons (incl. chatgpt.svg, claude.svg)
 dist/                      Built extension (load this in Chrome)
 ```
 
@@ -74,23 +100,30 @@ After editing source files, reload the extension at `chrome://extensions` (load 
 ## Known Limitations
 
 - **In-page overlay, not browser chrome.** Chrome extensions cannot modify the area left of the address bar the way Opera GX does natively. This extension overlays the page viewport and shifts content with a CSS margin.
-- **Many sites block iframes.** Discord, WhatsApp, X, Instagram, and most Google/Facebook properties refuse to load inside iframes. The extension detects this and shows an "Open in new tab" button instead.
-- **Shared browser session.** Where iframe embedding works, the panel uses your normal browser cookies/session.
+- **Many sites block iframes.** Discord, Twitch, ChatGPT, Claude, WhatsApp, X, Instagram, and most major platforms refuse iframe embedding. The extension detects this via response headers and opens a **companion popup window** instead.
+- **Companion is not docked.** Unlike Opera GX’s native sidebar, the companion is a standalone popup window. You can configure its size and position in settings.
+- **Shared browser session.** Both the iframe panel and companion window use your normal browser cookies/session.
 - **Page layout conflicts.** Sites with aggressive full-viewport layouts may not shift cleanly when the panel opens.
-- **Chrome only.** Requires Chrome 114+ (Manifest V3). TypeScript + SCSS build via Vite.
+- **Existing user pins.** New default pins only appear after first install or **Reset to defaults** (`chrome.storage.sync` merge behavior).
+- **Chrome only.** Requires Chrome 114+ (Manifest V3). Built with TypeScript, React 19, and SCSS via Vite.
 
 ### Message Protocol
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
-| `toggleSidebar` | background → content | Hide/show icon strip via toolbar click |
-| `togglePanel` | background → content | Open/close active panel |
-| `pinsUpdated` | popup → background → all tabs | Re-render icon strip |
-| `openTab` | content → background | Open blocked site in new tab |
-| `getState` | popup → content | Return panel state |
+| `checkEmbedAllowed` | content → background | Header preflight before iframe load |
+| `setSidebarHidden` | background → content | Hide/show icon strip via toolbar click |
+| `pinsUpdated` | background → content | Re-render icon strip after settings change |
+| `companionClosed` | background → content | Clear active pin when companion closes |
+| `openCompanion` | content → background | Open or navigate companion popup |
+| `closeCompanion` | content → background | Close companion when iframe embed succeeds |
+| `broadcastPinsUpdated` | popup/settings → background | Sync pins and settings to all tabs |
 | `getStorageData` | popup → background | Load pins/settings |
-| `broadcastPinsUpdated` | popup → background | Sync pins to all tabs |
-| `resetStorage` | popup → background | Restore defaults |
+| `resetStorage` | popup/settings → background | Restore defaults |
+| `getState` | popup → content | Return panel/sidebar state |
+| `openTab` | content → background | Open URL in new tab |
+
+See `docs/IMPLEMENTATION.md` for full architecture, embed detection layers, and debugging notes.
 
 ## License
 

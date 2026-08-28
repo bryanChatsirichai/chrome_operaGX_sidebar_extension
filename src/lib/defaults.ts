@@ -28,7 +28,12 @@ export const GX_DEFAULTS = {
     'google.com',
     'github.com',
     'linkedin.com',
-    'reddit.com'
+    'reddit.com',
+    'chatgpt.com',
+    'chat.openai.com',
+    'openai.com',
+    'claude.ai',
+    'anthropic.com'
   ],
 
   DEFAULT_PINS: [
@@ -89,11 +94,25 @@ export const GX_DEFAULTS = {
       order: 7
     },
     {
+      id: 'chatgpt',
+      name: 'ChatGPT',
+      url: 'https://chatgpt.com',
+      iconUrl: 'icons/apps/chatgpt.svg',
+      order: 8
+    },
+    {
+      id: 'claude',
+      name: 'Claude',
+      url: 'https://claude.ai',
+      iconUrl: 'icons/apps/claude.svg',
+      order: 9
+    },
+    {
       id: 'example',
       name: 'Example',
       url: 'https://example.com',
       iconUrl: 'icons/apps/example.svg',
-      order: 8
+      order: 10
     }
   ] satisfies Pin[],
 

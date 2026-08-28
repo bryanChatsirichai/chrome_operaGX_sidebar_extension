@@ -1,5 +1,6 @@
+import { useRef } from 'react';
 import { GX_DEFAULTS } from '../../lib/defaults';
-import { resolveIconUrl } from '../../lib/pin-utils';
+import { getCurrentPagePinDefaults, resolveIconUrl } from '../../lib/pin-utils';
 import type { CompanionHeightMode, Pin, Settings } from '../../lib/types';
 
 interface PinFormState {
@@ -19,6 +20,8 @@ interface SettingsPanelProps {
   onClose: () => void;
   onPinFormChange: (form: PinFormState) => void;
   onSavePin: (event: React.FormEvent) => void;
+  onPinCurrentPage: () => void;
+  onQuickPinCurrentPage: () => void;
   onCancelEdit: () => void;
   onEditPin: (pin: Pin) => void;
   onDeletePin: (index: number) => void;
@@ -44,6 +47,8 @@ export function SettingsPanel({
   onClose,
   onPinFormChange,
   onSavePin,
+  onPinCurrentPage,
+  onQuickPinCurrentPage,
   onCancelEdit,
   onEditPin,
   onDeletePin,
@@ -57,6 +62,8 @@ export function SettingsPanel({
   onSettingsPatchAndCommit,
   onReset
 }: SettingsPanelProps) {
+  const addFormRef = useRef<HTMLDivElement>(null);
+  const currentPage = getCurrentPagePinDefaults();
   const companionWidth = settings.companionWidth ?? GX_DEFAULTS.DEFAULT_SETTINGS.companionWidth;
   const companionHeight = settings.companionHeight ?? GX_DEFAULTS.DEFAULT_SETTINGS.companionHeight;
   const companionPosition = settings.companionPosition ?? GX_DEFAULTS.DEFAULT_SETTINGS.companionPosition;
@@ -81,67 +88,22 @@ export function SettingsPanel({
 
       <div className="settings-body">
         <div className="settings-section">
-          <h3 className="settings-heading settings-form-heading">
-            {editingPinId ? 'Edit website' : 'Add website'}
-          </h3>
-          <form className="settings-add-form" onSubmit={onSavePin}>
-            <input
-              className="settings-input"
-              type="text"
-              name="pinName"
-              placeholder="Website name"
-              maxLength={32}
-              required
-              value={pinForm.name}
-              onChange={(e) => onPinFormChange({ ...pinForm, name: e.target.value })}
-            />
-            <input
-              className="settings-input"
-              type="text"
-              name="pinUrl"
-              placeholder="https://example.com"
-              required
-              spellCheck={false}
-              autoCapitalize="off"
-              value={pinForm.url}
-              onChange={(e) => onPinFormChange({ ...pinForm, url: e.target.value })}
-            />
-            <input
-              className="settings-input"
-              type="text"
-              name="pinIconUrl"
-              placeholder="Icon URL (optional)"
-              spellCheck={false}
-              autoCapitalize="off"
-              value={pinForm.iconUrl}
-              onChange={(e) => onPinFormChange({ ...pinForm, iconUrl: e.target.value })}
-            />
-            <p className="settings-hint">Paste a direct link to a PNG, SVG, or JPG icon.</p>
-            <div className="settings-form-actions">
-              <button className="settings-btn settings-btn-primary settings-form-submit" type="submit">
-                {editingPinId ? 'Save changes' : 'Add to sidebar'}
-              </button>
-              {editingPinId && (
-                <button
-                  className="settings-btn settings-btn-secondary settings-form-cancel"
-                  type="button"
-                  onClick={onCancelEdit}
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-          </form>
-        </div>
-
-        <div className="settings-section">
           <div className="settings-section-header">
             <h3 className="settings-heading">Pinned websites</h3>
-            <span className="settings-hint">Drag to reorder</span>
+            <button
+              className="settings-btn settings-btn-secondary settings-add-pin-btn"
+              type="button"
+              onClick={() => {
+                onPinCurrentPage();
+                addFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              }}
+            >
+              + Add website
+            </button>
           </div>
           <ul className="settings-pins-list">
             {pins.length === 0 ? (
-              <li className="settings-empty">No pinned websites yet.</li>
+              <li className="settings-empty">No pinned websites yet. Add one below.</li>
             ) : (
               pins.map((pin, index) => (
                 <li
@@ -192,6 +154,100 @@ export function SettingsPanel({
               ))
             )}
           </ul>
+          <p className="settings-hint">Drag to reorder pinned websites.</p>
+        </div>
+
+        <div className="settings-section" ref={addFormRef}>
+          <h3 className="settings-heading settings-form-heading">
+            {editingPinId ? 'Edit website' : 'Pin a new website'}
+          </h3>
+
+          {!editingPinId && (
+            <div className="settings-current-page-card">
+              <div className="settings-current-page-info">
+                {currentPage.iconUrl ? (
+                  <img
+                    className="settings-current-page-icon"
+                    src={currentPage.iconUrl}
+                    alt=""
+                  />
+                ) : (
+                  <span className="settings-current-page-icon-fallback">
+                    {currentPage.name.charAt(0).toUpperCase()}
+                  </span>
+                )}
+                <div className="settings-current-page-text">
+                  <div className="settings-current-page-name">{currentPage.name}</div>
+                  <div className="settings-current-page-url">{currentPage.url}</div>
+                </div>
+              </div>
+              <div className="settings-current-page-actions">
+                <button
+                  className="settings-btn settings-btn-primary"
+                  type="button"
+                  onClick={onQuickPinCurrentPage}
+                >
+                  Pin current page
+                </button>
+                <button
+                  className="settings-btn settings-btn-secondary"
+                  type="button"
+                  onClick={onPinCurrentPage}
+                >
+                  Edit before adding
+                </button>
+              </div>
+            </div>
+          )}
+
+          <form className="settings-add-form" onSubmit={onSavePin}>
+            <input
+              className="settings-input"
+              type="text"
+              name="pinName"
+              placeholder="Website name"
+              maxLength={32}
+              required
+              value={pinForm.name}
+              onChange={(e) => onPinFormChange({ ...pinForm, name: e.target.value })}
+            />
+            <input
+              className="settings-input"
+              type="text"
+              name="pinUrl"
+              placeholder="https://example.com"
+              required
+              spellCheck={false}
+              autoCapitalize="off"
+              value={pinForm.url}
+              onChange={(e) => onPinFormChange({ ...pinForm, url: e.target.value })}
+            />
+            <input
+              className="settings-input"
+              type="text"
+              name="pinIconUrl"
+              placeholder="Icon URL (optional)"
+              spellCheck={false}
+              autoCapitalize="off"
+              value={pinForm.iconUrl}
+              onChange={(e) => onPinFormChange({ ...pinForm, iconUrl: e.target.value })}
+            />
+            <p className="settings-hint">Paste a direct link to a PNG, SVG, or JPG icon.</p>
+            <div className="settings-form-actions">
+              <button className="settings-btn settings-btn-primary settings-form-submit" type="submit">
+                {editingPinId ? 'Save changes' : 'Add to sidebar'}
+              </button>
+              {editingPinId && (
+                <button
+                  className="settings-btn settings-btn-secondary settings-form-cancel"
+                  type="button"
+                  onClick={onCancelEdit}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          </form>
         </div>
 
         <div className="settings-section">
