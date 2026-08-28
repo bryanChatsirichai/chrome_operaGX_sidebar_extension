@@ -54,6 +54,8 @@ Many sites refuse to load inside iframes. The extension decides **before opening
 
 Sites like **Example.com** load normally in the in-page panel. **Twitch, Discord, ChatGPT**, and similar pins skip the panel entirely and go straight to the companion window.
 
+**One side view at a time:** only the in-page panel *or* the companion popup is open — never both. Opening an embeddable pin closes the companion immediately; opening a blocked pin closes the in-page panel.
+
 ## Project Structure
 
 ```
@@ -103,6 +105,7 @@ After editing source files, reload the extension at `chrome://extensions` (load 
 
 - **In-page overlay, not browser chrome.** Chrome extensions cannot modify the area left of the address bar the way Opera GX does natively. This extension overlays the page viewport and shifts content with a CSS margin.
 - **Many sites block iframes.** Discord, Twitch, Spotify, YouTube, ChatGPT, Claude, WhatsApp, X, Instagram, and most major platforms refuse iframe embedding. The extension detects this via preflight (domain list + response headers) and opens a **companion popup window** directly — without opening the sidebar panel first.
+- **One side view at a time.** The in-page iframe panel and companion popup are mutually exclusive — switching pins closes whichever one is currently open.
 - **Companion is not docked.** Unlike Opera GX’s native sidebar, the companion is a standalone popup window. You can configure its size and position in settings.
 - **Shared browser session.** Both the iframe panel and companion window use your normal browser cookies/session.
 - **Page layout conflicts.** Sites with aggressive full-viewport layouts may not shift cleanly when the panel opens.
@@ -118,7 +121,7 @@ After editing source files, reload the extension at `chrome://extensions` (load 
 | `pinsUpdated` | background → content | Re-render icon strip after settings change |
 | `companionClosed` | background → content | Clear active pin when companion closes |
 | `openCompanion` | content → background | Open or navigate companion popup |
-| `closeCompanion` | content → background | Close companion when iframe embed succeeds |
+| `closeCompanion` | content → background | Close companion when opening the in-page panel (or after iframe success) |
 | `broadcastPinsUpdated` | popup/settings → background | Sync pins and settings to all tabs |
 | `getStorageData` | popup → background | Load pins/settings |
 | `resetStorage` | popup/settings → background | Restore defaults |

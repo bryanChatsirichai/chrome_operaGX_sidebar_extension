@@ -364,6 +364,8 @@ export function SidebarApp({
       clearIframeTimer();
       clearIframeVerifyTimer();
 
+      void chrome.runtime.sendMessage({ action: 'closeCompanion' }).catch(() => {});
+
       if (iframeRef.current) {
         iframeRef.current.src = pin.url;
       }
