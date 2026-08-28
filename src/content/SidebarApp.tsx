@@ -108,6 +108,23 @@ export function SidebarApp({
     return EMBED_BLOCKED_PATTERN.test(getIframeDocumentText());
   }, [getIframeDocumentText, getIframeLocationHref]);
 
+  const queryEmbedAllowed = useCallback(async (url: string): Promise<boolean> => {
+    if (gxIsDomainBlocked(url)) {
+      return false;
+    }
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'checkEmbedAllowed',
+        url
+      });
+      return Boolean(response?.embedAllowed);
+    } catch (error) {
+      console.warn('[GX Sidebar] Embed preflight failed:', error);
+      return true;
+    }
+  }, []);
+
   const saveAndBroadcast = useCallback(
     async (nextPins: Pin[], nextSettings: Settings, width: number) => {
       const merged = { ...nextSettings, panelWidth: width };
@@ -212,6 +229,36 @@ export function SidebarApp({
     [clearIframeTimer, clearIframeVerifyTimer, openCompanionForPin, showFallbackUI]
   );
 
+  const finalizeIframeSuccess = useCallback(
+    async (pin: Pin, generation: number) => {
+      if (generation !== iframeVerifyGenerationRef.current) {
+        return;
+      }
+
+      const embedAllowed = await queryEmbedAllowed(pin.url);
+      if (generation !== iframeVerifyGenerationRef.current) {
+        return;
+      }
+
+      if (
+        embedFailureHandledRef.current ||
+        embedFailureInFlightRef.current ||
+        !panelOpenRef.current ||
+        pin.id !== activePinIdRef.current
+      ) {
+        return;
+      }
+
+      if (!embedAllowed) {
+        void handleEmbedFailure(pin);
+        return;
+      }
+
+      showIframeLoaded();
+    },
+    [handleEmbedFailure, queryEmbedAllowed, showIframeLoaded]
+  );
+
   const verifyIframeEmbed = useCallback(
     (pin: Pin, attempt = 0, generation = iframeVerifyGenerationRef.current) => {
       if (generation !== iframeVerifyGenerationRef.current) {
@@ -248,11 +295,7 @@ export function SidebarApp({
           );
           return;
         }
-        if (gxIsDomainBlocked(pin.url)) {
-          void handleEmbedFailure(pin);
-          return;
-        }
-        showIframeLoaded();
+        void finalizeIframeSuccess(pin, generation);
         return;
       }
 
@@ -261,21 +304,16 @@ export function SidebarApp({
         return;
       }
 
-      if (gxIsDomainBlocked(pin.url)) {
-        void handleEmbedFailure(pin);
-        return;
-      }
-
-      showIframeLoaded();
+      void finalizeIframeSuccess(pin, generation);
     },
     [
       activePinId,
+      finalizeIframeSuccess,
       getIframeLocationHref,
       handleEmbedFailure,
       isIframeEmbedBlocked,
       panelOpen,
-      pins,
-      showIframeLoaded
+      pins
     ]
   );
 
@@ -297,25 +335,45 @@ export function SidebarApp({
       setPanelView('loading');
       setFallbackPin(null);
 
-      if (iframeRef.current) {
-        iframeRef.current.src = pin.url;
-      }
-
       clearIframeTimer();
       clearIframeVerifyTimer();
 
-      iframeLoadTimerRef.current = setTimeout(() => {
+      if (iframeRef.current) {
+        iframeRef.current.src = 'about:blank';
+      }
+
+      void (async () => {
+        const embedAllowed = await queryEmbedAllowed(pin.url);
         if (
-          !embedFailureHandledRef.current &&
-          !embedFailureInFlightRef.current &&
-          panelOpenRef.current &&
-          pin.id === activePinIdRef.current
+          pin.id !== activePinIdRef.current ||
+          !panelOpenRef.current ||
+          embedFailureHandledRef.current
         ) {
-          void handleEmbedFailure(pin);
+          return;
         }
-      }, GX_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS);
+
+        if (!embedAllowed) {
+          void handleEmbedFailure(pin);
+          return;
+        }
+
+        if (iframeRef.current) {
+          iframeRef.current.src = pin.url;
+        }
+
+        iframeLoadTimerRef.current = setTimeout(() => {
+          if (
+            !embedFailureHandledRef.current &&
+            !embedFailureInFlightRef.current &&
+            panelOpenRef.current &&
+            pin.id === activePinIdRef.current
+          ) {
+            void handleEmbedFailure(pin);
+          }
+        }, GX_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS);
+      })();
     },
-    [clearIframeTimer, clearIframeVerifyTimer, handleEmbedFailure]
+    [clearIframeTimer, clearIframeVerifyTimer, handleEmbedFailure, queryEmbedAllowed]
   );
 
   const closePanel = useCallback(() => {

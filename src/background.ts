@@ -11,7 +11,8 @@ import {
   gxRestoreCompanionState,
   gxUpdateCompanionLayout
 } from './lib/companion';
-import { gxGetCompanionLayoutFromSettings } from './lib/defaults';
+import { gxGetCompanionLayoutFromSettings, gxIsDomainBlocked } from './lib/defaults';
+import { gxCheckEmbedAllowed } from './lib/embed-check';
 import {
   gxGetStorageData,
   gxInitializeStorage,
@@ -64,9 +65,45 @@ chrome.action.onClicked.addListener(async (tab) => {
   await broadcastToAllTabs({ action: 'setSidebarHidden', hidden });
 });
 
+const EMBED_ALLOWED_CACHE_TTL_MS = 5 * 60 * 1000;
+const embedAllowedCache = new Map<string, { allowed: boolean; expires: number }>();
+
+async function getEmbedAllowed(url: string): Promise<boolean> {
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return true;
+  }
+
+  const cached = embedAllowedCache.get(hostname);
+  if (cached && cached.expires > Date.now()) {
+    return cached.allowed;
+  }
+
+  if (gxIsDomainBlocked(url)) {
+    embedAllowedCache.set(hostname, { allowed: false, expires: Date.now() + EMBED_ALLOWED_CACHE_TTL_MS });
+    return false;
+  }
+
+  const allowed = await gxCheckEmbedAllowed(url);
+  embedAllowedCache.set(hostname, { allowed, expires: Date.now() + EMBED_ALLOWED_CACHE_TTL_MS });
+  return allowed;
+}
+
 // --- Runtime message handlers ---
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'checkEmbedAllowed' && message.url) {
+    void getEmbedAllowed(String(message.url))
+      .then((embedAllowed) => sendResponse({ ok: true, embedAllowed }))
+      .catch((error) => {
+        console.error('[GX Sidebar] checkEmbedAllowed failed:', error);
+        sendResponse({ ok: false, embedAllowed: true, error: String(error) });
+      });
+    return true;
+  }
+
   if (message.action === 'openTab' && message.url) {
     chrome.tabs.create({ url: message.url });
     sendResponse({ ok: true });
