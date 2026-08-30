@@ -15,11 +15,34 @@ Configure who can push to `main`, approve PRs, and publish release tags. These s
 
 ## 1. Branch protection on `main`
 
-**Settings → Rules → Rulesets → New branch ruleset** (or classic **Branches → Add rule**)
+### Import the ruleset (recommended)
+
+1. Commit and push `.github/rulesets/main-branch.json` to `main`
+2. On GitHub: **Settings → Rules → Rulesets**
+3. **New ruleset → Import a ruleset**
+4. Select `.github/rulesets/main-branch.json`
+5. Review settings:
+   - **Target:** branch `refs/heads/main` (full ref path)
+   - **Pull request:** 1 approval, code owner review (uses `.github/CODEOWNERS`)
+   - **Restrict updates:** only bypass list can push directly to `main`
+   - **Bypass:** `bryanChatsirichai` (and Repository Admin)
+6. Set enforcement to **Active** → **Save**
+
+### What the ruleset does
+
+- **PR required** — changes must go through a pull request with **1 approval**
+- **Code owner review** — you must approve (via `.github/CODEOWNERS`)
+- **Dismiss stale reviews** — new commits reset approvals
+- **Restrict updates** — only bypass users can push directly to `main`; others use PRs
+- **No force push / branch delete** on `main`
+
+### Manual setup (alternative)
+
+**Settings → Rules → Rulesets → New branch ruleset**
 
 | Setting | Value |
 |---------|--------|
-| Branch / pattern | `main` |
+| Branch / pattern | `refs/heads/main` |
 | Require a pull request before merging | On |
 | Required approvals | **1** |
 | Require review from Code Owners | On (uses `.github/CODEOWNERS`) |
@@ -111,7 +134,8 @@ Others get a permission error if they try to push a `v*` tag.
 | File | Purpose |
 |------|---------|
 | `.github/CODEOWNERS` | Requires your review on all PRs |
+| `.github/rulesets/main-branch.json` | Importable branch protection for `main` (PR + owner-only push) |
 | `.github/rulesets/release-tags.json` | Importable tag protection for `v*` |
 | `.github/workflows/release.yml` | Builds ZIP when a `v*` tag on `main` is pushed |
 
-> **Note:** GitHub does not auto-apply rulesets from repo files. You must **import** `release-tags.json` once in **Settings → Rules → Rulesets** (or create the rule manually). Branch protection is also configured in the GitHub UI.
+> **Note:** GitHub does not auto-apply rulesets from repo files. Import each JSON once in **Settings → Rules → Rulesets** (or create rules manually). Use full ref paths in patterns (`refs/heads/main`, `refs/tags/v*`).
