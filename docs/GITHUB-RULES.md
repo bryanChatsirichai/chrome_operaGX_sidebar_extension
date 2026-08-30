@@ -41,14 +41,14 @@ Release builds are triggered by pushing tags like `v0.1.0`. This ruleset blocks 
 3. **New ruleset → Import a ruleset**
 4. Select `.github/rulesets/release-tags.json` from this repo (or download from GitHub and pick the file)
 5. Review settings:
-   - **Target:** tags matching `v*`
+   - **Target:** tags matching `refs/tags/v*` (full ref path — bare `v*` fails import)
    - **Rules:** restrict creation, update, deletion
    - **Bypass:** `bryanChatsirichai` (and Repository Admin)
 6. Set enforcement to **Active** → **Create** / **Save**
 
 ### What the ruleset does
 
-- **`v*` tags only** — matches your release workflow (`git tag v0.1.0`)
+- **`refs/tags/v*` pattern** — matches release tags like `v0.1.0` (GitHub rulesets require the full ref path, not bare `v*`)
 - **Creation / update / deletion** — only users on the bypass list can push or move release tags
 - **Non-fast-forward** — prevents force-updating tags
 - **Bypass list** — preconfigured for `@bryanChatsirichai` in the JSON file
@@ -69,7 +69,7 @@ Others get a permission error if they try to push a `v*` tag.
 1. Name: `Release tags (v*) — owner only`
 2. Enforcement: **Active**
 3. **Bypass list → Add bypass →** select your user (and optionally **Repository admin**)
-4. **Target tags → Add → Include →** pattern `v*`
+4. **Target tags → Add → Include →** pattern `refs/tags/v*` (or `v*` in the UI if importing is not used)
 5. **Tag protections** — enable:
    - Restrict creations
    - Restrict updates
