@@ -7,6 +7,7 @@ End users download a pre-built ZIP from [GitHub Releases](https://github.com/bry
 1. Push this repo to GitHub (already done if you cloned from `origin`).
 2. Ensure **Actions** are enabled: repo **Settings → Actions → General → Allow all actions**.
 3. No secrets required — the workflow uses the built-in `GITHUB_TOKEN` to create releases.
+4. Restrict who can push release tags — import `.github/rulesets/release-tags.json` (see [GITHUB-RULES.md](GITHUB-RULES.md)).
 
 ## Publish a new version
 
