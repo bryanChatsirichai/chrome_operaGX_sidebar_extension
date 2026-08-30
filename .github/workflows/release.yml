@@ -1,0 +1,51 @@
+# Builds the extension and publishes a downloadable ZIP to GitHub Releases.
+# Trigger: push a version tag (e.g. git tag v0.1.0 && git push origin v0.1.0).
+# Tag must match manifest.json "version" (tag v0.1.0 → "version": "0.1.0").
+name: Build and release extension
+
+on:
+  push:
+    tags:
+      - 'v*' # matches v0.1.0, v1.2.3, etc.
+
+# Required so the workflow can create releases and upload the ZIP asset.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # matches package.json engines.node
+          cache: npm
+
+      # Clean install from lockfile, typecheck, then Vite build → dist/
+      - name: Install and build
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      # Used to name the ZIP (gx-sidebar-v0.1.0.zip) and match the release tag.
+      - name: Read version from manifest
+        id: version
+        run: echo "version=$(node -p "require('./manifest.json').version")" >> "$GITHUB_OUTPUT"
+
+      # Zip dist/ contents (not the folder itself) so manifest.json is at the ZIP root.
+      - name: Create ZIP from dist/
+        run: |
+          cd dist
+          zip -r "../gx-sidebar-v${{ steps.version.outputs.version }}.zip" .
+
+      # Creates the GitHub Release for the pushed tag and attaches the ZIP.
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gx-sidebar-v${{ steps.version.outputs.version }}.zip
+          generate_release_notes: true

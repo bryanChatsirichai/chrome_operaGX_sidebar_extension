@@ -16,19 +16,33 @@ A Chrome extension that injects an Opera GX-style sidebar into web pages: a vert
 - Dark Opera GX-inspired theme
 - Settings sync across devices via `chrome.storage.sync`
 
-## Install (Unpacked)
+## Install
 
-1. Open Chrome and go to `chrome://extensions`
-2. Enable **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Build the extension, then select the `dist` folder:
-   ```bash
-   npm install
-   npm run build
-   ```
-5. Visit any website — the icon strip appears on the left
+[![Release](https://img.shields.io/github/v/release/bryanChatsirichai/chrome_operaGX_sidebar_extension?label=download)](https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases/latest)
+
+### For users (no build required)
+
+1. Download **gx-sidebar-v*.zip** from [GitHub Releases](https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases/latest)
+2. Extract the ZIP (e.g. to `Downloads\gx-sidebar`)
+3. Open Chrome and go to `chrome://extensions`
+4. Enable **Developer mode** (top right)
+5. Click **Load unpacked** and select the extracted folder (the one containing `manifest.json`)
+6. Visit any website — the icon strip appears on the left
 
 > **Existing installs:** New default pins and embed/companion behavior improvements apply after **Settings → Reset to defaults**, or on first install. Reload the extension after updating.
+
+### For developers (build from source)
+
+```bash
+npm install
+npm run build
+```
+
+Then **Load unpacked** from the `dist/` folder at `chrome://extensions`.
+
+### Publishing a release (maintainers)
+
+See [docs/RELEASE.md](docs/RELEASE.md) — bump `manifest.json` version, commit, then `git tag v0.1.x` and `git push origin v0.1.x`. GitHub Actions builds the ZIP and attaches it to the release automatically.
 
 ## Usage
 
