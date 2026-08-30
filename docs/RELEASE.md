@@ -22,7 +22,7 @@ End users download a pre-built ZIP from [GitHub Releases](https://github.com/bry
    git push
    ```
 
-3. **Create and push a tag** (this triggers the build):
+3. **Create and push a tag** on a commit that is on `main` (this triggers the build):
    ```bash
    git tag v0.1.1
    git push origin v0.1.1
@@ -107,3 +107,4 @@ Load the `dist/` folder in Chrome via **Load unpacked** at `chrome://extensions`
 | Version mismatch | Tag `v0.1.1` must match `"version": "0.1.1"` in `manifest.json` |
 | New commits on main but same ZIP | Push to `main` does not rebuild — see [Rebuild same version](#rebuild-same-version) |
 | Re-run workflow didn't update ZIP | Re-run uses the old tagged commit — move the tag to the new commit instead |
+| Release failed: not on main | Tag must point to a commit on `main` — merge to main first, then tag |

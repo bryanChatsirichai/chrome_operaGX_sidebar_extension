@@ -1,6 +1,7 @@
 # Builds the extension and publishes a downloadable ZIP to GitHub Releases.
 # Trigger: push a version tag (e.g. git tag v0.1.0 && git push origin v0.1.0).
 # Tag must match manifest.json "version" (tag v0.1.0 → "version": "0.1.0").
+# The tagged commit must be on main — tags on other branches are rejected.
 name: Build and release extension
 
 on:
@@ -17,10 +18,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history for branch containment check (actions/checkout docs)
+
+      - name: Ensure tag is on main
+        run: |
+          git fetch origin main
+          if ! git branch -r --contains "${GITHUB_SHA}" | grep -qE 'origin/main$'; then
+            echo "::error::Release tags must point to a commit on main. Tag ${GITHUB_REF_NAME} is not on origin/main."
+            exit 1
+          fi
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '20' # matches package.json engines.node
           cache: npm
@@ -45,7 +56,9 @@ jobs:
 
       # Creates the GitHub Release for the pushed tag and attaches the ZIP.
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
+        if: github.ref_type == 'tag'
         with:
           files: gx-sidebar-v${{ steps.version.outputs.version }}.zip
           generate_release_notes: true
+          overwrite_files: true # replace ZIP when rebuilding the same version tag
