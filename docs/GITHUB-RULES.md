@@ -24,7 +24,6 @@ Configure who can push to `main`, approve PRs, and publish release tags. These s
 5. Review settings:
    - **Target:** branch `refs/heads/main` (full ref path)
    - **Pull request:** 1 approval, code owner review (uses `.github/CODEOWNERS`)
-   - **Restrict updates:** only bypass list can push directly to `main`
    - **Bypass:** `bryanChatsirichai` (and Repository Admin)
 6. Set enforcement to **Active** → **Save**
 
@@ -33,8 +32,9 @@ Configure who can push to `main`, approve PRs, and publish release tags. These s
 - **PR required** — changes must go through a pull request with **1 approval**
 - **Code owner review** — you must approve (via `.github/CODEOWNERS`)
 - **Dismiss stale reviews** — new commits reset approvals
-- **Restrict updates** — only bypass users can push directly to `main`; others use PRs
+- **No direct push** — the PR rule blocks direct pushes to `main` for everyone except the bypass list
 - **No force push / branch delete** on `main`
+- **No "Restrict updates" rule** — it would block non-bypass users from merging PRs even after you approve (merging is an update to `main`)
 
 ### Manual setup (alternative)
 
@@ -46,10 +46,12 @@ Configure who can push to `main`, approve PRs, and publish release tags. These s
 | Require a pull request before merging | On |
 | Required approvals | **1** |
 | Require review from Code Owners | On (uses `.github/CODEOWNERS`) |
-| Restrict who can push | **Only `bryanChatsirichai`** |
 | Dismiss stale approvals on new commits | Recommended |
+| Block force pushes / Restrict deletions | On |
+| Restrict updates | **Off** (would block approved PR merges) |
+| Bypass list | **`bryanChatsirichai`** / Repository admin |
 
-Contributors with **Write** access can push feature branches and open PRs, but cannot push to `main` or merge without your approval.
+Contributors with **Write** access can push feature branches and open PRs, but cannot push to `main` or merge without your approval. External users (no repo access) can only open PRs from forks; they can never push or merge.
 
 ---
 
@@ -134,7 +136,7 @@ Others get a permission error if they try to push a `v*` tag.
 | File | Purpose |
 |------|---------|
 | `.github/CODEOWNERS` | Requires your review on all PRs |
-| `.github/rulesets/main-branch.json` | Importable branch protection for `main` (PR + owner-only push) |
+| `.github/rulesets/main-branch.json` | Importable branch protection for `main` (PR + owner approval, owner bypass) |
 | `.github/rulesets/release-tags.json` | Importable tag protection for `v*` |
 | `.github/workflows/release.yml` | Builds ZIP when a `v*` tag on `main` is pushed |
 
