@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { BROWSER_SIDEBAR_DEFAULTS } from '../../lib/defaults';
 import { getCurrentPagePinDefaults, resolveIconUrl } from '../../lib/pin-utils';
-import type { Pin } from '../../lib/types';
-
-interface PinFormState {
-  name: string;
-  url: string;
-  iconUrl: string;
-}
+import type { Pin, PinFormState } from '../../lib/types';
 
 interface SettingsPanelProps {
   open: boolean;
@@ -25,11 +20,17 @@ interface SettingsPanelProps {
   onDragStart: (index: number) => void;
   onDragEnd: () => void;
   onDropPin: (index: number) => void;
+  /** Fired on every slider input while dragging (live CSS-only update). */
   onPanelWidthChange: (width: number) => void;
+  /** Fired once when the slider gesture ends (state + storage commit). */
   onPanelWidthCommit: (width: number) => void;
   onReset: () => void;
 }
 
+/**
+ * In-page settings panel: pin list (reorder / edit / delete), add-or-edit
+ * form, panel-width slider, and reset. Form state is owned by SidebarApp.
+ */
 export function SettingsPanel({
   open,
   pins,
@@ -249,8 +250,8 @@ export function SettingsPanel({
             <input
               className="settings-width-range"
               type="range"
-              min={300}
-              max={1000}
+              min={BROWSER_SIDEBAR_DEFAULTS.PANEL_MIN_WIDTH}
+              max={BROWSER_SIDEBAR_DEFAULTS.PANEL_MAX_WIDTH}
               step={10}
               value={sliderWidth}
               onChange={(e) => {

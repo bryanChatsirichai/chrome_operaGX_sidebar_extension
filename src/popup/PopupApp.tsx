@@ -3,6 +3,14 @@ import { BROWSER_SIDEBAR_DEFAULTS, browserSidebarGetDefaultStorageData } from '.
 import { parsePinUrl, reindexPins, resolveIconUrl } from '../lib/pin-utils';
 import type { Pin, Settings } from '../lib/types';
 
+/**
+ * Extension options page (manifest `options_ui`, opened in a tab). Despite
+ * the file name there is no toolbar popup: clicking the toolbar icon toggles
+ * the sidebar instead (see background.ts). Mirrors the in-page SettingsPanel
+ * for users who prefer managing pins from a dedicated page.
+ */
+
+/** Loads pins (sorted by `order`) and settings via the background worker. */
 async function loadStorageData(): Promise<{ pins: Pin[]; settings: Settings }> {
   const response = await chrome.runtime.sendMessage({ action: 'getStorageData' });
   return {
@@ -13,6 +21,7 @@ async function loadStorageData(): Promise<{ pins: Pin[]; settings: Settings }> {
   };
 }
 
+/** Persists pins + settings, then asks the background to push them to every open tab. */
 async function saveAndBroadcast(pins: Pin[], settings: Settings): Promise<void> {
   await chrome.storage.sync.set({ pins, settings });
   await chrome.runtime.sendMessage({ action: 'broadcastPinsUpdated', pins, settings });
@@ -79,7 +88,7 @@ export function PopupApp() {
       if (editingPinId) {
         nextPins = pins.map((pin) =>
           pin.id === editingPinId
-            ? { ...pin, name, url: parsedUrl.href, iconUrl: iconUrl || '' }
+            ? { ...pin, name, url: parsedUrl.href, iconUrl }
             : pin
         );
       } else {
@@ -89,7 +98,7 @@ export function PopupApp() {
             id: `custom-${Date.now()}`,
             name,
             url: parsedUrl.href,
-            iconUrl: iconUrl || '',
+            iconUrl,
             order: pins.length
           }
         ];
@@ -164,8 +173,8 @@ export function PopupApp() {
           <input
             type="range"
             id="panelWidth"
-            min={300}
-            max={1000}
+            min={BROWSER_SIDEBAR_DEFAULTS.PANEL_MIN_WIDTH}
+            max={BROWSER_SIDEBAR_DEFAULTS.PANEL_MAX_WIDTH}
             step={10}
             value={settings.panelWidth}
             onChange={(e) => setSettings({ ...settings, panelWidth: Number(e.target.value) })}

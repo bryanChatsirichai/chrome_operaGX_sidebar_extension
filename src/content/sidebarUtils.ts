@@ -2,6 +2,13 @@ import { BROWSER_SIDEBAR_DEFAULTS, browserSidebarGetDefaultStorageData } from '.
 import type { Pin, Settings } from '../lib/types';
 import pageShiftStyles from './page-shift.module.scss?inline';
 
+/**
+ * Page-side helpers for the content script: everything that touches the host
+ * document (outside the sidebar's shadow root) — page-shift stylesheet,
+ * layout classes on <html>, CSS variables, and browser-zoom compensation.
+ */
+
+/** Injects the host-page stylesheet that shifts page content right of the strip (idempotent). */
 export function injectPageShiftStyles(): void {
   if (document.getElementById('browser-sidebar-page-shift-styles')) {
     return;
@@ -13,6 +20,11 @@ export function injectPageShiftStyles(): void {
   document.documentElement.appendChild(style);
 }
 
+/**
+ * Reads the initial sidebar state for first render, with pins sorted by
+ * `order`. Falls back to factory defaults if storage is unreachable (e.g. the
+ * extension context was invalidated).
+ */
 export async function loadSidebarStorage(): Promise<{
   pins: Pin[];
   settings: Settings;
@@ -41,6 +53,11 @@ export async function loadSidebarStorage(): Promise<{
   }
 }
 
+/**
+ * Sets exactly one page-shift state class on <html>:
+ * `browser-sidebar-hidden`, `browser-sidebar-open` (panel or settings open),
+ * or `browser-sidebar-strip-visible`.
+ */
 export function applyLayoutClasses(
   sidebarHidden: boolean,
   panelOpen: boolean,
@@ -122,13 +139,10 @@ function applyStripWidthVars(rootEl: HTMLElement | null): void {
   }
 }
 
+/** Writes the strip-width and panel-width CSS variables on both sides of the shadow boundary. */
 export function setCssVariables(panelWidth: number, rootEl: HTMLElement | null): void {
   applyStripWidthVars(rootEl);
-  document.documentElement.style.setProperty('--browser-sidebar-panel-width', `${panelWidth}px`);
-
-  if (rootEl) {
-    rootEl.style.setProperty('--browser-sidebar-panel-width', `${panelWidth}px`);
-  }
+  setPanelWidthCss(panelWidth, rootEl);
 }
 
 /**

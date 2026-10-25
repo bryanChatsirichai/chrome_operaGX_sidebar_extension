@@ -1,6 +1,10 @@
-/** Resolves extension-relative icon paths to full chrome-extension:// URLs. */
+/**
+ * Pure helpers shared by the content script, options page, and service worker.
+ */
+
 const resolvedIconUrlCache = new Map<string, string>();
 
+/** Resolves extension-relative icon paths to full chrome-extension:// URLs. */
 export function resolveIconUrl(iconUrl: string): string {
   if (!iconUrl) {
     return '';
@@ -36,6 +40,26 @@ export function parsePinUrl(url: string): URL | null {
   }
 }
 
+/** Origin of a URL string, or null when the URL is malformed. */
+export function getUrlOrigin(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Order-independent fingerprint of the pinned URL set. Embed-bypass rules
+ * only need re-syncing when this changes.
+ */
+export function computePinUrlSignature(pins: { url: string }[]): string {
+  return pins
+    .map((pin) => pin.url)
+    .sort()
+    .join('|');
+}
+
 /** Default name, URL, and favicon for pinning the active page. */
 export function getCurrentPagePinDefaults(): { name: string; url: string; iconUrl: string } {
   const url = window.location.href;
@@ -63,7 +87,10 @@ export function getCurrentPagePinDefaults(): { name: string; url: string; iconUr
   }
 }
 
-/** Re-sorts pins by order field after drag-and-drop or deletion. */
+/**
+ * Rewrites each pin's `order` to match its array index (after drag-and-drop
+ * or deletion). Mutates the given pins in place and returns the same array.
+ */
 export function reindexPins<T extends { order: number }>(pins: T[]): T[] {
   pins.forEach((pin, index) => {
     pin.order = index;

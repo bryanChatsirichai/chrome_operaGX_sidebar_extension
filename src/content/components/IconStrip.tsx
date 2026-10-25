@@ -19,6 +19,7 @@ interface IconStripProps {
   onPinDropPin?: (index: number) => void;
 }
 
+/** The vertical strip of pin buttons plus the settings toggle. */
 export function IconStrip({
   pins,
   activePinId,

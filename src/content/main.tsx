@@ -11,11 +11,18 @@ import {
 } from './sidebarUtils';
 import sidebarStyles from './sidebar.module.scss?inline';
 
+/**
+ * Content-script entry (top frame only, document_start). Mounts the sidebar
+ * React app inside a closed shadow root so page CSS and scripts cannot reach
+ * it; the page-shift stylesheet is the only thing injected into the page.
+ */
+
 let hostEl: HTMLDivElement | null = null;
 
 registerDocumentKeyboardIsolation(() => hostEl);
 
 void (async function initBrowserSidebar(): Promise<void> {
+  // Skip iframes and re-injection (the toolbar handler may executeScript again).
   if (window.top !== window.self || document.getElementById('browser-sidebar-host')) {
     return;
   }

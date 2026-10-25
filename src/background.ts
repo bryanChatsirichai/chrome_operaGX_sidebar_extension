@@ -10,6 +10,7 @@ import {
   browserSidebarResetStorageToDefaults,
   browserSidebarSaveLastActivePinId
 } from './lib/storage';
+import { computePinUrlSignature, getUrlOrigin } from './lib/pin-utils';
 import type { Pin, Settings } from './lib/types';
 
 // --- Extension lifecycle ---
@@ -37,15 +38,11 @@ browserSidebarWatchPinnedSiteCookies();
 // matches, ensureEmbedRules answers immediately.
 let browserSidebarEmbedSyncSignature: string | null = null;
 
-function browserSidebarComputeEmbedSyncSignature(pins: Pin[]): string {
-  return pins.map((pin) => pin.url).sort().join('|');
-}
-
 /** Full embed-support sync: rules first (they gate panel navigations), cookies second. */
 async function browserSidebarSyncEmbedSupport(pins: Pin[]): Promise<void> {
   await browserSidebarSyncEmbedBypassRules(pins);
   await browserSidebarRelaxPinnedSiteCookies(pins);
-  browserSidebarEmbedSyncSignature = browserSidebarComputeEmbedSyncSignature(pins);
+  browserSidebarEmbedSyncSignature = computePinUrlSignature(pins);
 }
 
 // Re-assert the embed-bypass DNR session rules on EVERY worker wake, not just
@@ -116,34 +113,12 @@ chrome.action.onClicked.addListener(async (tab) => {
 // (ERR_BLOCKED_BY_CLIENT = host-page CSP frame-src; ERR_BLOCKED_BY_RESPONSE
 // = XFO/CORP on the response).
 
+/** Case-insensitive header lookup; `name` must be lowercase. */
 function browserSidebarGetHeader(
   headers: chrome.webRequest.HttpHeader[] | undefined,
   name: string
 ): string | undefined {
   return headers?.find((header) => header.name.toLowerCase() === name)?.value;
-}
-
-/** Does the frame that sent this message have a pinned-site origin? */
-async function browserSidebarSenderOriginIsPinned(
-  sender: chrome.runtime.MessageSender
-): Promise<boolean> {
-  try {
-    const frameUrl = sender.url ?? sender.origin;
-    if (!frameUrl) {
-      return false;
-    }
-    const frameOrigin = new URL(frameUrl).origin;
-    const stored = (await chrome.storage.sync.get('pins')) as { pins?: Pin[] };
-    return (stored.pins ?? []).some((pin) => {
-      try {
-        return new URL(pin.url).origin === frameOrigin;
-      } catch {
-        return false;
-      }
-    });
-  } catch {
-    return false;
-  }
 }
 
 /** DEBUG: log a network event in both the SW console and the tab it happened in. */
@@ -185,8 +160,7 @@ chrome.webRequest.onBeforeSendHeaders.addListener((details) => {
   // embed-bypass.ts should have rewritten them to look like a top-level
   // navigation — x.com serves its 'Your Request Couldn't be Processed' page
   // when Sec-Fetch-Dest: iframe survives the rewrite.
-  const get = (name: string) =>
-    details.requestHeaders?.find((header) => header.name.toLowerCase() === name)?.value ?? null;
+  const get = (name: string) => browserSidebarGetHeader(details.requestHeaders, name) ?? null;
   browserSidebarNetLog(details.tabId, 'log', 'sub_frame request HEADERS:', {
     url: details.url,
     secFetchDest: get('sec-fetch-dest'),
@@ -212,47 +186,45 @@ chrome.webRequest.onBeforeRedirect.addListener((details) => {
 { urls: ['<all_urls>'] });
 
 chrome.webRequest.onHeadersReceived.addListener((details) => {
-  void (async () => {
-    if (details.type === 'main_frame') {
-      const csp = browserSidebarGetHeader(details.responseHeaders, 'content-security-policy') ?? '';
-      const frameSrc = /frame-src[^;]*/i.exec(csp)?.[0];
-      if (frameSrc) {
-        browserSidebarNetLog(details.tabId, 'log', 'host page CSP:', {
-          url: details.url,
-          frameSrc
-        });
-      }
-      return;
-    }
-
-    if (details.type !== 'sub_frame') {
-      return;
-    }
-
-    // Log EVERY sub_frame response unconditionally — the filter is the thing
-    // we are debugging; if x.com responses disappear, we must see it.
+  if (details.type === 'main_frame') {
     const csp = browserSidebarGetHeader(details.responseHeaders, 'content-security-policy') ?? '';
-    browserSidebarNetLog(details.tabId, 'log', 'sub_frame response:', {
-      url: details.url,
-      initiator: details.initiator,
-      frameId: details.frameId,
-      parentFrameId: details.parentFrameId,
-      statusCode: details.statusCode,
-      statusLine: (details as { statusLine?: string }).statusLine,
-      // A partitioned service worker answering from its cache is the known
-      // x.com failure mode — the XFO it serves is intact and DNR never sees
-      // the response to strip it.
-      fromCache: (details as { fromCache?: boolean }).fromCache ?? false,
-      redirected: (details as { redirectUrl?: string }).redirectUrl !== details.url,
-      redirectUrl: (details as { redirectUrl?: string }).redirectUrl,
-      xFrameOptions: browserSidebarGetHeader(details.responseHeaders, 'x-frame-options'),
-      cspFrameAncestors: /frame-ancestors[^;]*/i.exec(csp)?.[0] ?? null,
-      crossOriginResourcePolicy: browserSidebarGetHeader(
-        details.responseHeaders,
-        'cross-origin-resource-policy'
-      )
-    });
-  })();
+    const frameSrc = /frame-src[^;]*/i.exec(csp)?.[0];
+    if (frameSrc) {
+      browserSidebarNetLog(details.tabId, 'log', 'host page CSP:', {
+        url: details.url,
+        frameSrc
+      });
+    }
+    return;
+  }
+
+  if (details.type !== 'sub_frame') {
+    return;
+  }
+
+  // Log EVERY sub_frame response unconditionally — the filter is the thing
+  // we are debugging; if x.com responses disappear, we must see it.
+  const csp = browserSidebarGetHeader(details.responseHeaders, 'content-security-policy') ?? '';
+  browserSidebarNetLog(details.tabId, 'log', 'sub_frame response:', {
+    url: details.url,
+    initiator: details.initiator,
+    frameId: details.frameId,
+    parentFrameId: details.parentFrameId,
+    statusCode: details.statusCode,
+    statusLine: (details as { statusLine?: string }).statusLine,
+    // A partitioned service worker answering from its cache is the known
+    // x.com failure mode — the XFO it serves is intact and DNR never sees
+    // the response to strip it.
+    fromCache: (details as { fromCache?: boolean }).fromCache ?? false,
+    redirected: (details as { redirectUrl?: string }).redirectUrl !== details.url,
+    redirectUrl: (details as { redirectUrl?: string }).redirectUrl,
+    xFrameOptions: browserSidebarGetHeader(details.responseHeaders, 'x-frame-options'),
+    cspFrameAncestors: /frame-ancestors[^;]*/i.exec(csp)?.[0] ?? null,
+    crossOriginResourcePolicy: browserSidebarGetHeader(
+      details.responseHeaders,
+      'cross-origin-resource-policy'
+    )
+  });
 },
 { urls: ['<all_urls>'] });
 
@@ -279,14 +251,7 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
       }
       const hostname = new URL(details.url).hostname.replace(/^www\./, '');
       const { pins: pinned } = (await chrome.storage.sync.get('pins')) as { pins?: Pin[] };
-      const isPinnedOrigin = (pinned ?? []).some((pin) => {
-        try {
-          return new URL(pin.url).hostname.replace(/^www\./, '') === hostname;
-        } catch {
-          return false;
-        }
-      });
-      if (!isPinnedOrigin) {
+      if (!browserSidebarGetPinHostnames(pinned ?? []).includes(hostname)) {
         return;
       }
       await chrome.tabs.sendMessage(details.tabId, {
@@ -314,6 +279,24 @@ chrome.tabs.onZoomChange.addListener((change) => {
     });
 });
 
+/**
+ * Message protocol (content script / options page -> background). Handlers
+ * that answer asynchronously return true to keep `sendResponse` alive.
+ *
+ *   openTab                     open a URL in a new tab
+ *   saveLastActivePin           persist the last clicked pin id
+ *   broadcastPinsUpdated        fan out pins/settings to all tabs, re-sync embed support
+ *   getZoomFactor               report the sender tab's browser zoom
+ *   repairEmbedPartition        user/auto-invoked SW + cache wipe (see below)
+ *   ensureEmbedRules            gate: DNR rules are installed before panel navigation
+ *   shouldGuardScroll           frameScrollGuard: is this frame a pinned origin?
+ *   shouldManageServiceWorkers  frameDiagnostics: is this frame a pinned origin?
+ *   panelFrameBooted            frameDiagnostics boot signal, forwarded to the tab
+ *   getStorageData / resetStorage
+ *
+ * Background -> tab messages: setSidebarHidden, pinsUpdated, pageZoomChanged,
+ * embedSubFrameFailed, panelFrameBooted, netLog (DEBUG).
+ */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'openTab' && message.url) {
     chrome.tabs.create({ url: message.url });
@@ -385,7 +368,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void (async () => {
       try {
         const data = await browserSidebarGetStorageData();
-        const signature = browserSidebarComputeEmbedSyncSignature(data.pins);
+        const signature = computePinUrlSignature(data.pins);
 
         if (signature === browserSidebarEmbedSyncSignature) {
           // Fast path: rules live for the whole browser session, the cookie
@@ -472,6 +455,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // --- Helpers ---
+
+/** Does the frame that sent this message have a pinned-site origin? */
+async function browserSidebarSenderOriginIsPinned(
+  sender: chrome.runtime.MessageSender
+): Promise<boolean> {
+  try {
+    const frameUrl = sender.url ?? sender.origin;
+    if (!frameUrl) {
+      return false;
+    }
+    const frameOrigin = new URL(frameUrl).origin;
+    const stored = (await chrome.storage.sync.get('pins')) as { pins?: Pin[] };
+    return (stored.pins ?? []).some((pin) => getUrlOrigin(pin.url) === frameOrigin);
+  } catch {
+    return false;
+  }
+}
 
 /** Returns true for standard web pages where content scripts can run. */
 function isInjectableUrl(url: string | undefined): boolean {

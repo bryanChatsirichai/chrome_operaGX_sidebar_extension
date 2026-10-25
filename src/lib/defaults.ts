@@ -1,11 +1,15 @@
 import type { Pin, Settings, StorageData } from './types';
 
+const DEFAULT_PANEL_WIDTH = 600;
+
 /** Central constants for layout limits, default pins, and embed detection. */
 export const BROWSER_SIDEBAR_DEFAULTS = {
+  /** Width of the always-visible icon strip, in physical px. */
   STRIP_WIDTH: 48,
-  PANEL_WIDTH: 600,
+  PANEL_WIDTH: DEFAULT_PANEL_WIDTH,
   PANEL_MIN_WIDTH: 300,
   PANEL_MAX_WIDTH: 1000,
+  /** Safety net: a panel embed that has not verified by now is declared failed. */
   IFRAME_LOAD_TIMEOUT_MS: 15000,
 
   DEFAULT_PINS: [
@@ -61,7 +65,7 @@ export const BROWSER_SIDEBAR_DEFAULTS = {
   ] satisfies Pin[],
 
   DEFAULT_SETTINGS: {
-    panelWidth: 600,
+    panelWidth: DEFAULT_PANEL_WIDTH,
     theme: 'dark'
   } satisfies Settings
 } as const;

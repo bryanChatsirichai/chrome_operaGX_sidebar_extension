@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BROWSER_SIDEBAR_DEFAULTS, browserSidebarClamp } from '../lib/defaults';
-import { parsePinUrl, reindexPins, resolveIconUrl, getCurrentPagePinDefaults } from '../lib/pin-utils';
+import {
+  computePinUrlSignature,
+  getCurrentPagePinDefaults,
+  getUrlOrigin,
+  parsePinUrl,
+  reindexPins
+} from '../lib/pin-utils';
 import { browserSidebarRuntimeAlive, browserSidebarSafeSendMessage } from './runtimeGuard';
-import type { Pin, Settings } from '../lib/types';
+import type { Pin, PinFormState, Settings } from '../lib/types';
 import { IconStrip } from './components/IconStrip';
 import { AppPanel } from './components/AppPanel';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -15,10 +21,30 @@ import {
 } from './sidebarUtils';
 import { refreshFixedElementShift } from './fixedShift';
 
+/**
+ * Root component of the in-page sidebar (rendered inside a closed shadow
+ * root by main.tsx). Owns all sidebar state:
+ *
+ *  - Panel lifecycle: open/close, one iframe per pin kept "warm" (mounted
+ *    but hidden) for instant switching, with LRU eviction.
+ *  - Embed verification: decides whether a panel iframe really loaded the
+ *    site or is showing a blocked/error page, and falls back (with one
+ *    automatic partition repair) when it did not.
+ *  - Pin CRUD + drag reorder, persisted to chrome.storage.sync and
+ *    broadcast to every tab through the background worker.
+ *  - Panel resize (drag handle and settings slider) without per-frame React
+ *    renders, plus browser-zoom compensation.
+ *
+ * Many values are mirrored into refs so long-lived listeners and timers read
+ * the latest state without re-registering on every render.
+ */
+
+// --- Embed verification tuning ---
+
 const EMBED_BLOCKED_PATTERN =
   /refused to connect|content is blocked|contact the site owner|can't be embedded|cannot be displayed|x-frame-options|frame-ancestors|failed to load|err_blocked_by|err_name_not_resolved|err_connection_refused|err_address_unreachable|err_cert_|err_timed_out/i;
 
-const IFRAME_VERIFY_MAX_ATTEMPTS = 1;
+/** Re-check interval while waiting for a cross-origin frame's boot signal. */
 const IFRAME_VERIFY_RETRY_MS = 100;
 /**
  * How long verification waits for the frame's boot signal (frameDiagnostics
@@ -59,6 +85,8 @@ const EMBED_RULES_CACHE_TTL_MS = 60_000;
 /** Hover dwell before a speculative preload mounts the hidden frame. */
 const PIN_PRELOAD_HOVER_DELAY_MS = 150;
 
+// --- Warm frames + repair ---
+
 /** Persists panel state across opens — warm frames stay mounted while hidden. */
 export interface WarmFrameEntry {
   pinId: string;
@@ -90,7 +118,30 @@ const WARM_FRAME_LIMIT = 4;
  */
 const AUTO_REPAIR_COOLDOWN_MS = 30_000;
 
+/** What the panel body shows: nothing, spinner, the live iframe, or the failure view. */
 export type PanelView = 'idle' | 'loading' | 'iframe' | 'fallback';
+
+/** Messages the background worker sends to this tab (see background.ts). */
+interface SidebarRuntimeMessage {
+  action?: string;
+  hidden?: boolean;
+  pins?: Pin[];
+  settings?: Settings;
+  level?: string;
+  messageText?: string;
+  payload?: unknown;
+  url?: string;
+  error?: string;
+  frameId?: number;
+  zoom?: number;
+}
+
+function clearTimeoutRef(ref: { current: ReturnType<typeof setTimeout> | null }): void {
+  if (ref.current) {
+    clearTimeout(ref.current);
+    ref.current = null;
+  }
+}
 
 interface SidebarAppProps {
   initialPins: Pin[];
@@ -133,7 +184,7 @@ export function SidebarApp({
   // keeps rendering but its messaging is dead; the user should refresh.
   const [runtimeDead, setRuntimeDead] = useState(false);
   const [editingPinId, setEditingPinId] = useState<string | null>(null);
-  const [pinForm, setPinForm] = useState({ name: '', url: '', iconUrl: '' });
+  const [pinForm, setPinForm] = useState<PinFormState>({ name: '', url: '', iconUrl: '' });
   const [resizeDragging, setResizeDragging] = useState(false);
   const [sliderResizing, setSliderResizing] = useState(false);
   // Browser zoom of this tab (1 = 100%): the sidebar counter-scales so it
@@ -189,6 +240,10 @@ export function SidebarApp({
   panelOpenRef.current = panelOpen;
   activePinIdRef.current = activePinId;
   pinsRef.current = pins;
+
+  // ---------------------------------------------------------------------
+  // Warm-frame bookkeeping
+  // ---------------------------------------------------------------------
 
   /** Commits the next warm-frame list (ref + state stay in lockstep). */
   const updateWarmFrames = useCallback((next: WarmFrameEntry[]) => {
@@ -278,34 +333,19 @@ export function SidebarApp({
     [activePinId, pins]
   );
 
-  const clearIframeTimer = useCallback(() => {
-    if (iframeLoadTimerRef.current) {
-      clearTimeout(iframeLoadTimerRef.current);
-      iframeLoadTimerRef.current = null;
-    }
-  }, []);
+  // ---------------------------------------------------------------------
+  // Timers + iframe inspection
+  // ---------------------------------------------------------------------
 
-  const clearIframeVerifyTimer = useCallback(() => {
-    if (iframeVerifyTimerRef.current) {
-      clearTimeout(iframeVerifyTimerRef.current);
-      iframeVerifyTimerRef.current = null;
-    }
-  }, []);
+  const clearIframeTimer = useCallback(() => clearTimeoutRef(iframeLoadTimerRef), []);
+  const clearIframeVerifyTimer = useCallback(() => clearTimeoutRef(iframeVerifyTimerRef), []);
+  const clearIframeWatchdog = useCallback(() => clearTimeoutRef(iframeWatchdogTimerRef), []);
+  const clearPreloadHoverTimer = useCallback(() => clearTimeoutRef(preloadHoverTimerRef), []);
 
-  const clearIframeWatchdog = useCallback(() => {
-    if (iframeWatchdogTimerRef.current) {
-      clearTimeout(iframeWatchdogTimerRef.current);
-      iframeWatchdogTimerRef.current = null;
-    }
-  }, []);
-
-  const clearPreloadHoverTimer = useCallback(() => {
-    if (preloadHoverTimerRef.current) {
-      clearTimeout(preloadHoverTimerRef.current);
-      preloadHoverTimerRef.current = null;
-    }
-  }, []);
-
+  /**
+   * Active panel iframe's href: '' when there is no frame/location yet,
+   * null when access throws (cross-origin document - or a blocked frame).
+   */
   const getIframeLocationHref = useCallback((): string | null => {
     try {
       return iframeRef.current?.contentWindow?.location?.href ?? '';
@@ -381,6 +421,7 @@ export function SidebarApp({
     }
   }, [getIframeLocationHref]);
 
+  /** Writes pins + settings to sync storage and asks the background to update every tab. */
   const saveAndBroadcast = useCallback(
     async (nextPins: Pin[], nextSettings: Settings, width: number) => {
       const merged = { ...nextSettings, panelWidth: width };
@@ -400,6 +441,26 @@ export function SidebarApp({
     },
     []
   );
+
+  /**
+   * Single commit path for a finished width gesture (drag handle or
+   * slider): React state + storage write + broadcast, so every open tab
+   * converges on the new width.
+   */
+  const commitPanelWidth = useCallback(
+    (width: number) => {
+      widthGestureActiveRef.current = false;
+      panelWidthRef.current = width;
+      setPanelWidth(width);
+      setSettings((prev) => ({ ...prev, panelWidth: width }));
+      void saveAndBroadcast(pins, { ...settings, panelWidth: width }, width);
+    },
+    [pins, saveAndBroadcast, settings]
+  );
+
+  // ---------------------------------------------------------------------
+  // Embed verification + failure handling
+  // ---------------------------------------------------------------------
 
   const showIframeLoaded = useCallback(() => {
     clearIframeTimer();
@@ -500,7 +561,7 @@ export function SidebarApp({
         }
 
         if (isIframeEmbedBlocked()) {
-          void handleEmbedFailure(pin, 'watchdog: blocked after initial success');
+          handleEmbedFailure(pin, 'watchdog: blocked after initial success');
           return;
         }
 
@@ -512,6 +573,7 @@ export function SidebarApp({
     [clearIframeWatchdog, handleEmbedFailure, isIframeEmbedBlocked]
   );
 
+  /** Verification passed: reveal the frame and start the late-failure watchdog. */
   const finalizeIframeSuccess = useCallback(
     (pin: Pin, generation: number) => {
       if (generation !== iframeVerifyGenerationRef.current) {
@@ -537,6 +599,12 @@ export function SidebarApp({
     [getIframeLocationHref, markFrameReady, showIframeLoaded, startIframeWatchdog]
   );
 
+  /**
+   * One verification step for the active pin's frame. Reschedules itself
+   * until the frame is proven live (same-origin readable, or cross-origin
+   * with a boot signal) or proven blocked. `generation` cancels stale
+   * chains whenever a newer open/close/failure bumps the counter.
+   */
   const verifyIframeEmbed = useCallback(
     (pin: Pin, attempt = 0, generation = iframeVerifyGenerationRef.current) => {
       if (generation !== iframeVerifyGenerationRef.current) {
@@ -592,13 +660,7 @@ export function SidebarApp({
         // way). The discriminator is the frame's own boot signal — a
         // committed document runs frameDiagnostics at document_start and
         // reports 'panelFrameBooted'; a blocked frame never runs scripts.
-        const bootOrigin = (() => {
-          try {
-            return new URL(pin.url).origin;
-          } catch {
-            return null;
-          }
-        })();
+        const bootOrigin = getUrlOrigin(pin.url);
 
         if (bootOrigin !== null && bootedOriginsRef.current.has(bootOrigin)) {
           finalizeIframeSuccess(pin, generation);
@@ -640,6 +702,7 @@ export function SidebarApp({
     ]
   );
 
+  /** Starts a fresh verification chain (new generation, new boot-grace window). */
   const startIframeVerification = useCallback(
     (pin: Pin) => {
       iframeVerifyGenerationRef.current += 1;
@@ -663,10 +726,7 @@ export function SidebarApp({
     // DNR session rules persist for the whole browser session. If we already
     // asserted them for this exact set of pinned URLs within the TTL window,
     // skip the background roundtrip (saves latency + cold worker wakes).
-    const signature = pinsRef.current
-      .map((p) => p.url)
-      .sort()
-      .join('|');
+    const signature = computePinUrlSignature(pinsRef.current);
     if (
       signature === embedRulesSignatureRef.current &&
       Date.now() - embedRulesAssertedAtRef.current < EMBED_RULES_CACHE_TTL_MS
@@ -692,6 +752,10 @@ export function SidebarApp({
     }
   }, []);
 
+  // ---------------------------------------------------------------------
+  // Panel open / close / preload
+  // ---------------------------------------------------------------------
+
   /**
    * Speculatively mounts a pin's hidden iframe (hover dwell / press) WITHOUT
    * opening the panel, so the click that follows is warm-instant. Mirrors
@@ -714,12 +778,11 @@ export function SidebarApp({
       navCounterRef.current.set(pin.id, nextNav);
       // Same fresh-nav guard as openPanelForPin: drop any stale boot signal
       // for this origin so a blocked preload can't be verified by inheritance.
-      try {
-        bootedOriginsRef.current.delete(new URL(pin.url).origin);
-      } catch {
-        // Malformed pin URL — skip preloading entirely.
-        return;
+      const origin = getUrlOrigin(pin.url);
+      if (origin === null) {
+        return; // Malformed pin URL — skip preloading entirely.
       }
+      bootedOriginsRef.current.delete(origin);
       console.log('[browser-sidebar] Preloading pin frame:', pin.name);
       touchWarmFrame({ pinId: pin.id, src: pin.url, nav: nextNav, status: 'loading' });
     },
@@ -753,19 +816,26 @@ export function SidebarApp({
       // (the effect below re-points on later active-pin changes).
       iframeRef.current = frameElementsRef.current.get(pin.id) ?? null;
 
+      // Safety net: declare failure if verification hasn't finished in time.
+      const armLoadTimeout = () => {
+        iframeLoadTimerRef.current = setTimeout(() => {
+          if (
+            !embedFailureHandledRef.current &&
+            panelOpenRef.current &&
+            pin.id === activePinIdRef.current
+          ) {
+            handleEmbedFailure(pin, `load timeout after ${BROWSER_SIDEBAR_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS}ms`);
+          }
+        }, BROWSER_SIDEBAR_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS);
+      };
+
       const existing = warmFramesRef.current.find((f) => f.pinId === pin.id);
 
       if (existing && existing.src === pin.url && existing.status === 'ready') {
         // Instant reuse only with proof the frame's scripts are running: a frame
         // can reach 'ready' via onLoad alone, and blocked error pages fire onLoad
         // too. Cross-origin reuse without a boot signal gets re-verified instead.
-        const bootOrigin = (() => {
-          try {
-            return new URL(pin.url).origin;
-          } catch {
-            return null;
-          }
-        })();
+        const bootOrigin = getUrlOrigin(pin.url);
         const sameOrigin = bootOrigin !== null && bootOrigin === window.location.origin;
         if (sameOrigin || (bootOrigin !== null && bootedOriginsRef.current.has(bootOrigin))) {
           console.log('[browser-sidebar] Reusing warm frame:', pin.name);
@@ -787,15 +857,7 @@ export function SidebarApp({
         // the spinner, re-arm verification, and re-arm the timeout net.
         touchWarmFrame(existing);
         startIframeVerification(pin);
-        iframeLoadTimerRef.current = setTimeout(() => {
-          if (
-            !embedFailureHandledRef.current &&
-            panelOpenRef.current &&
-            pin.id === activePinIdRef.current
-          ) {
-            handleEmbedFailure(pin, `load timeout after ${BROWSER_SIDEBAR_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS}ms`);
-          }
-        }, BROWSER_SIDEBAR_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS);
+        armLoadTimeout();
         return;
       }
 
@@ -808,10 +870,9 @@ export function SidebarApp({
       navCounterRef.current.set(pin.id, nextNav);
       // Fresh navigation: drop any stale boot signal for this origin so a
       // blocked commit can't inherit the previous document's liveness proof.
-      try {
-        bootedOriginsRef.current.delete(new URL(pin.url).origin);
-      } catch {
-        // Malformed pin URL — nothing to clear.
+      const origin = getUrlOrigin(pin.url);
+      if (origin !== null) {
+        bootedOriginsRef.current.delete(origin);
       }
       touchWarmFrame({
         pinId: pin.id,
@@ -820,15 +881,7 @@ export function SidebarApp({
         status: 'loading'
       });
 
-      iframeLoadTimerRef.current = setTimeout(() => {
-        if (
-          !embedFailureHandledRef.current &&
-          panelOpenRef.current &&
-          pin.id === activePinIdRef.current
-        ) {
-          handleEmbedFailure(pin, `load timeout after ${BROWSER_SIDEBAR_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS}ms`);
-        }
-      }, BROWSER_SIDEBAR_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS);
+      armLoadTimeout();
     },
     [
       clearIframeTimer,
@@ -859,6 +912,10 @@ export function SidebarApp({
     clearIframeVerifyTimer();
     clearIframeWatchdog();
   }, [clearIframeTimer, clearIframeVerifyTimer, clearIframeWatchdog]);
+
+  // ---------------------------------------------------------------------
+  // Strip interactions + iframe events
+  // ---------------------------------------------------------------------
 
   const handlePinHover = useCallback(
     (pin: Pin) => {
@@ -926,6 +983,7 @@ export function SidebarApp({
   handlePinClickRef.current = handlePinClick;
   handleEmbedFailureRef.current = handleEmbedFailure;
 
+  /** iframe onLoad: verify the active frame, or mark a background frame warm. */
   const handleIframeLoad = useCallback(
     (pinId: string) => {
       const pin = pinsRef.current.find((p) => p.id === pinId) ?? null;
@@ -1019,6 +1077,10 @@ export function SidebarApp({
     await repairAndRetry(pin);
   }, [fallbackPin, getActivePin, repairAndRetry, repairInProgress]);
 
+  // ---------------------------------------------------------------------
+  // Settings + pin management
+  // ---------------------------------------------------------------------
+
   const toggleSettings = useCallback(() => {
     if (settingsOpen) {
       setSettingsOpen(false);
@@ -1055,6 +1117,7 @@ export function SidebarApp({
     setPinForm(getCurrentPagePinDefaults());
   }, []);
 
+  /** True when another pin (optionally excluding one being edited) has the same normalized URL. */
   const isPinUrlDuplicate = useCallback(
     (url: string, excludePinId?: string | null): boolean => {
       const parsed = parsePinUrl(url);
@@ -1077,6 +1140,7 @@ export function SidebarApp({
     [pins]
   );
 
+  /** "Pin current page": adds the page immediately, skipping the form. */
   const quickPinCurrentPage = useCallback(async () => {
     const defaults = getCurrentPagePinDefaults();
     const parsedUrl = parsePinUrl(defaults.url);
@@ -1107,6 +1171,7 @@ export function SidebarApp({
     await saveAndBroadcast(nextPins, settings, panelWidth);
   }, [isPinUrlDuplicate, panelWidth, pins, resetPinForm, saveAndBroadcast, settings]);
 
+  /** Add/edit form submit. Editing the open pin's URL reloads the panel. */
   const handleSavePin = useCallback(
     async (event: React.FormEvent) => {
       event.preventDefault();
@@ -1180,7 +1245,6 @@ export function SidebarApp({
       }
       if (activePinId === pin.id) {
         closePanel();
-        setActivePinId(null);
       }
       const nextPins = reindexPins(pins.filter((_, i) => i !== index));
       setPins(nextPins);
@@ -1189,6 +1253,7 @@ export function SidebarApp({
     [activePinId, closePanel, editingPinId, panelWidth, pins, resetPinForm, saveAndBroadcast, settings]
   );
 
+  /** Drop handler shared by the strip and the settings list (source index lives in draggedIndexRef). */
   const handleDropPin = useCallback(
     async (targetIndex: number) => {
       const fromIndex = draggedIndexRef.current;
@@ -1232,6 +1297,14 @@ export function SidebarApp({
     setSettingsOpen(false);
   }, [closePanel, resetPinForm]);
 
+  // ---------------------------------------------------------------------
+  // Panel resize
+  // ---------------------------------------------------------------------
+
+  /**
+   * Drag-handle resize. Live updates go straight to the CSS variable once
+   * per animation frame; React state and storage are committed once at the end.
+   */
   const handleResizeStart = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       // Only primary (left/pointer) press initiates a drag resize.
@@ -1302,25 +1375,23 @@ export function SidebarApp({
         if (iframeRef.current) {
           iframeRef.current.style.width = '';
         }
-        // Single React state + storage commit at the end of the gesture.
-        // Same commit path as the settings slider (saveAndBroadcast):
-        // storage write + pinsUpdated broadcast, so every other open tab
-        // converges on the new width. The old direct storage write left
-        // already-loaded tabs on their old width — the "different sidebar
-        // width on different sites" bug.
-        widthGestureActiveRef.current = false;
-        panelWidthRef.current = currentWidth;
-        setPanelWidth(currentWidth);
-        setSettings((prev) => ({ ...prev, panelWidth: currentWidth }));
-        void saveAndBroadcast(pins, { ...settings, panelWidth: currentWidth }, currentWidth);
+        // Single commit at the end of the gesture, shared with the settings
+        // slider. A direct storage write here used to leave already-loaded
+        // tabs on their old width — the "different sidebar width on
+        // different sites" bug.
+        commitPanelWidth(currentWidth);
       };
 
       handle.addEventListener('pointermove', onMove);
       handle.addEventListener('pointerup', onEnd);
       handle.addEventListener('pointercancel', onEnd);
     },
-    [panelWidth, pins, saveAndBroadcast, settings]
+    [commitPanelWidth, panelWidth]
   );
+
+  // ---------------------------------------------------------------------
+  // Effects: layout, zoom, cross-tab sync, dismissal
+  // ---------------------------------------------------------------------
 
   useEffect(() => {
     panelWidthRef.current = panelWidth;
@@ -1460,8 +1531,13 @@ export function SidebarApp({
     return () => root.removeEventListener('wheel', onWheel);
   }, []);
 
+  // Background -> tab message handling.
   useEffect(() => {
-    const listener = (message: { action?: string; hidden?: boolean; pins?: Pin[]; settings?: Settings; level?: string; messageText?: string; payload?: unknown; url?: string; error?: string; frameId?: number; zoom?: number }, _sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => {
+    const listener = (
+      message: SidebarRuntimeMessage,
+      _sender: chrome.runtime.MessageSender,
+      sendResponse: (response?: unknown) => void
+    ) => {
       if (message.action === 'netLog') {
         // DEBUG: mirror of background webRequest observations — see background.ts.
         const fn = message.level === 'error' ? console.error : console.log;
@@ -1482,21 +1558,10 @@ export function SidebarApp({
           panelOpen: panelOpenRef.current
         });
 
-        const failedOrigin = (() => {
-          try {
-            return new URL(message.url!).origin;
-          } catch {
-            return null;
-          }
-        })();
-
-        const affectedPin = pinsRef.current.find((pin) => {
-          try {
-            return failedOrigin !== null && new URL(pin.url).origin === failedOrigin;
-          } catch {
-            return false;
-          }
-        });
+        const failedOrigin = getUrlOrigin(message.url);
+        const affectedPin = pinsRef.current.find(
+          (pin) => failedOrigin !== null && getUrlOrigin(pin.url) === failedOrigin
+        );
 
         if (
           affectedPin &&
@@ -1514,13 +1579,7 @@ export function SidebarApp({
       if (message.action === 'panelFrameBooted' && typeof message.url === 'string') {
         // A panel frame's scripts are running — proof the frame committed a
         // real document. Cross-origin verification gates success on this.
-        const origin = (() => {
-          try {
-            return new URL(message.url).origin;
-          } catch {
-            return null;
-          }
-        })();
+        const origin = getUrlOrigin(message.url);
         if (origin) {
           bootedOriginsRef.current.add(origin);
           console.log('[browser-sidebar] Frame booted (scripts running):', origin);
@@ -1576,7 +1635,6 @@ export function SidebarApp({
           const stillExists = nextPins.some((p: Pin) => p.id === activePinIdRef.current);
           if (!stillExists) {
             closePanel();
-            setActivePinId(null);
           }
         }
 
@@ -1745,11 +1803,7 @@ export function SidebarApp({
           }
           setSliderResizing(false);
           setPageResizeActive(false);
-          widthGestureActiveRef.current = false;
-          panelWidthRef.current = width;
-          setPanelWidth(width);
-          setSettings((prev) => ({ ...prev, panelWidth: width }));
-          void saveAndBroadcast(pins, { ...settings, panelWidth: width }, width);
+          commitPanelWidth(width);
         }}
         onReset={() => void handleReset()}
       />

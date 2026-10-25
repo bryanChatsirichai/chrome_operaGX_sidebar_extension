@@ -1,4 +1,3 @@
-import type { RefObject } from 'react';
 import type { Pin } from '../../lib/types';
 import { resolveIconUrl } from '../../lib/pin-utils';
 import type { PanelView, WarmFrameEntry } from '../SidebarApp';
@@ -24,6 +23,11 @@ interface AppPanelProps {
   repairInProgress: boolean;
 }
 
+/**
+ * The expandable panel: header actions, loading spinner, one iframe per warm
+ * pin, the embed-failure fallback view, and the resize handle. Purely
+ * presentational — all embed state lives in SidebarApp.
+ */
 export function AppPanel({
   open,
   pin,
