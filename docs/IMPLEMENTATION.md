@@ -1,36 +1,61 @@
 # browser-sidebar — Implementation Guide
 
-This document describes how the extension works so a new agent session can understand the repo without re-discovering behavior from scratch.
+How the extension works, for contributors (and agent sessions) who need to understand the repo without re-discovering its behavior from scratch.
 
-## Purpose
+**Contents**
 
-browser-sidebar is a **Chrome Manifest V3 extension** that brings a native-style sidebar to normal web pages. It is **not** native browser chrome — it injects UI into page viewports and shifts page content with CSS margins.
-
-**Primary UX:**
-
-1. A fixed **48px icon strip** on the left of every `http(s)` page (hideable via toolbar icon).
-2. An expandable **in-page panel** (300–1000px) that **overlays the page** (Opera-GX popover style) and loads pinned sites in an `<iframe>`. The panel is tried **first for every pin** — the background service worker strips iframe-blocking response headers (`X-Frame-Options`, CSP `frame-ancestors`) for pinned domains via `declarativeNetRequest`. See **Embed bypass** below for the full layered strategy.
-3. If a site still can't render in the panel (rare — app-level JS/OAuth anti-framing checks that don't rely on headers), the runtime iframe-verification layer detects the failure and the panel shows an **in-panel fallback view** (pin icon, pin name, "This site could not load in the panel.") with an **Open in new tab** button and a **Repair & retry** button.
-4. **Inline settings** (gear icon) to add/edit/remove/reorder pins, adjust panel width, and reset to defaults.
-5. **Instant pin switching** — up to 4 recently used panel iframes stay mounted (hidden) behind the panel ("warm frames"), and hovering a pin for 150ms speculatively preloads its frame, so clicking it is warm-instant.
+1. [Overview](#1-overview)
+2. [Architecture](#2-architecture)
+3. [Source layout](#3-source-layout)
+4. [Permissions](#4-permissions)
+5. [Data model and storage](#5-data-model-and-storage)
+6. [Content-script UI](#6-content-script-ui)
+7. [User flows](#7-user-flows)
+8. [Embed pipeline](#8-embed-pipeline)
+9. [Message protocol](#9-message-protocol)
+10. [Concurrency and race conditions](#10-concurrency-and-race-conditions)
+11. [Limitations](#11-limitations)
+12. [Debugging and testing](#12-debugging-and-testing)
+13. [Extending the codebase](#13-extending-the-codebase)
+14. [Related docs](#14-related-docs)
 
 ---
 
-## Architecture
+## 1. Overview
+
+browser-sidebar is a **Chrome Manifest V3 extension** that adds a native-browser-style sidebar to normal web pages. It is **not** browser chrome: it injects UI into each page and shifts page content with CSS.
+
+**Primary UX**
+
+1. A **48px icon strip** on the left of every `http(s)` page (hide/show with the toolbar icon).
+2. An expandable **panel** (300–1000px) that **overlays the page** (Opera GX popover style) and loads the clicked pin in an `<iframe>`. The panel is tried first for every pin; the background worker removes the headers that would block it (see [Embed pipeline](#8-embed-pipeline)).
+3. If a site still can't render, the panel shows an **in-panel fallback view** with **Open in new tab** and **Repair & retry**. Nothing ever opens automatically.
+4. **Inline settings** (gear icon): add/edit/delete/reorder pins, panel width, reset to defaults. The same features exist on the full-page options page.
+5. **Instant switching**: up to 4 recently used panel iframes stay mounted but hidden ("warm frames"), and hovering a pin for 150ms preloads it.
+
+### Why not a native sidebar?
+
+Native browser sidebars render apps in **real top-level browsing contexts**, which `X-Frame-Options` / CSP `frame-ancestors` never apply to. Extensions cannot create such a context beside the page. They can only inject into pages, open tabs/windows, and rewrite network headers for hosts they have permission for. So the panel is an `<iframe>`, which is exactly the context sites like X, Instagram, and Discord block. The extension uses `declarativeNetRequest` (plus the other layers in §8) to undo those blocks for pinned domains only.
+
+---
+
+## 2. Architecture
 
 ```mermaid
 flowchart TB
-  subgraph pages [Main browser tabs — top-level frames]
+  subgraph pages [Top-level frame of every http/https tab]
     MAIN[content/main.tsx]
     SA[SidebarApp.tsx + components]
-    RG[content/runtimeGuard.ts]
+    SU[content/sidebarUtils.ts]
     FS[content/fixedShift.ts]
-    PSC[page-shift.module.scss]
+    RG[content/runtimeGuard.ts]
+    KI[content/keyboardIsolation.ts]
     MAIN --> SA
-    MAIN --> FS
+    MAIN --> SU
+    MAIN --> KI
+    SA --> SU
+    SA --> FS
     SA --> RG
-    SA --> PSC
-    FS --> PSC
   end
 
   subgraph frames [Every subframe — all_frames content scripts]
@@ -49,519 +74,468 @@ flowchart TB
     POP[popup/PopupApp.tsx]
   end
 
-  SA -->|chrome.runtime.sendMessage| BG
+  SA -->|ensureEmbedRules / repairEmbedPartition / broadcastPinsUpdated …| BG
   BG --> EB
   BG --> CA
   BG --> ST
   FSG -->|shouldGuardScroll| BG
   FD -->|shouldManageServiceWorkers / panelFrameBooted| BG
+  BG -->|pinsUpdated / setSidebarHidden / pageZoomChanged| SA
   BG -->|embedSubFrameFailed / panelFrameBooted / netLog| SA
-  POP -->|broadcastPinsUpdated| BG
-  BG -->|pinsUpdated / setSidebarHidden| SA
+  POP -->|getStorageData / broadcastPinsUpdated / resetStorage| BG
 ```
 
-**Stack:** TypeScript, React 19, SCSS modules, Vite + `@crxjs/vite-plugin`. Content script mounts a React tree inside a closed Shadow DOM.
+`lib/pin-utils.ts`, `lib/defaults.ts`, and `lib/types.ts` are shared by all three contexts.
 
-### Why not a native sidebar?
+**Stack:** TypeScript (strict), React 19, SCSS, Vite 5 + `@crxjs/vite-plugin`. The content script mounts its React tree inside a **closed shadow root**. Vite keeps CSS class names unscoped (`generateScopedName: '[local]'`) so the shadow-DOM markup matches the SCSS selectors.
 
-Native browser sidebars render sidebar apps in **real top-level browsing contexts**, which are never subject to `X-Frame-Options` / CSP `frame-ancestors` — those headers only govern embedding inside an `<iframe>`. Chrome extensions can only:
-- Inject into pages (`content_scripts`)
-- Open tabs/windows (`chrome.tabs`, `chrome.windows`)
-- Rewrite network response headers for requests they have host permission for (`declarativeNetRequest`)
-
-There's no extension API to create a real top-level browsing context docked beside the page the way native browser sidebars do, so this extension uses an `<iframe>` inside the injected sidebar. Sites like X, Instagram, and Discord send `X-Frame-Options` / CSP `frame-ancestors` headers specifically to block that kind of iframe embedding.
-
-**The fix (`lib/embed-bypass.ts`):** since the extension already has `<all_urls>` host permission, it uses `declarativeNetRequest` to strip those response headers for `sub_frame` requests to pinned domains before they reach the renderer. The remaining gap: a handful of sites (mainly OAuth/sign-in flows) also refuse framing via JavaScript or server-side checks unrelated to response headers — those show the in-panel fallback view with an "Open in new tab" button.
+**Build:** `npm run build` writes `dist/`, which you load unpacked at `chrome://extensions`. `npm run dev` rebuilds on change, and `npm run typecheck` runs `tsc --noEmit`.
 
 ---
 
-## File map
+## 3. Source layout
 
 | Path | Role |
 |------|------|
-| `manifest.json` | MV3 config; 3 content-script entries (see below); `@crxjs/vite-plugin` builds to `dist/` |
-| `src/background.ts` | Service worker: messaging hub, embed-bypass rule sync + fast path, cookie relax + watcher, `webRequest` debug trace, partition repair, sub-frame message relays |
-| `src/content/main.tsx` | Entry (top frames only): bootstrap, shadow DOM mount, React root |
-| `src/content/SidebarApp.tsx` | Main UI state: pins, panel, warm frames, iframe verification, settings |
-| `src/content/runtimeGuard.ts` | Extension-context invalidation guards (`browserSidebarRuntimeAlive`, `browserSidebarSafeSendMessage`) |
-| `src/content/fixedShift.ts` | Shifts `position: fixed` page elements right of the sidebar (translate override + MutationObserver) |
-| `src/content/frameScrollGuard.ts` | Content script in **every subframe** (`all_frames`): asks the background whether this frame is a pinned-site embed; if so applies `overscroll-behavior: contain` |
-| `src/content/frameDiagnostics.ts` | Content script in **every subframe** (`all_frames`, `document_start`): boot signal (`panelFrameBooted`), in-frame diagnostics, and partitioned-service-worker cleanup for pinned origins |
-| `src/content/components/IconStrip.tsx` | Pin buttons + gear; hover/press preload hooks |
-| `src/content/components/AppPanel.tsx` | Iframe panel (one iframe per warm frame), loading/fallback views, resize handle, Repair & retry |
-| `src/content/components/SettingsPanel.tsx` | Inline settings UI |
-| `src/content/sidebarUtils.ts` | Page-shift injection, layout classes, CSS variables, storage load |
-| `src/content/keyboardIsolation.ts` | Prevents host-page shortcuts from swallowing sidebar input |
-| `src/content/sidebar.module.scss` | Shadow DOM styles (dark theme) |
-| `src/content/page-shift.module.scss` | Shifts `html` margin when the strip is visible; drives `--browser-sidebar-shift` for fixed elements |
-| `src/lib/defaults.ts` | Constants, default pins, `browserSidebarClamp` |
+| `manifest.json` | MV3 config: 3 content-script entries (below), service worker, `options_ui` |
+| `src/background.ts` | Service worker: message router, embed-support sync (DNR rules + cookies) with signature fast path, toolbar toggle, zoom relay, partition repair, `webRequest` debug trace |
+| **Content script (top frame)** | |
+| `src/content/main.tsx` | Entry: injects page-shift CSS, creates `#browser-sidebar-host` + closed shadow root, mounts React |
+| `src/content/SidebarApp.tsx` | Root component and all sidebar state: panel lifecycle, warm frames, embed verification, pin CRUD, resize, zoom, message handling |
+| `src/content/components/IconStrip.tsx` | Pin buttons + gear; hover/press preload hooks; drag-to-reorder |
+| `src/content/components/AppPanel.tsx` | Panel header, loading view, one iframe per warm frame, fallback view, resize handle |
+| `src/content/components/SettingsPanel.tsx` | Inline settings UI (form state owned by `SidebarApp`) |
+| `src/content/sidebarUtils.ts` | Host-page side: page-shift stylesheet, `<html>` layout classes, CSS variables, zoom compensation, initial storage load |
+| `src/content/fixedShift.ts` | Shifts viewport-anchored page elements (fixed / ICB-absolute) right of the strip |
+| `src/content/keyboardIsolation.ts` | Stops host-page shortcuts from swallowing sidebar form input |
+| `src/content/runtimeGuard.ts` | Extension-context invalidation guards |
+| `src/content/sidebar.module.scss` | Shadow-DOM styles (dark theme), inlined via `?inline` |
+| `src/content/page-shift.module.scss` | Global host-page styles: `html` margin + `--browser-sidebar-shift` |
+| **Content scripts (every subframe)** | |
+| `src/content/frameScrollGuard.ts` | Pinned-origin frames get `overscroll-behavior: contain` |
+| `src/content/frameDiagnostics.ts` | Pinned-origin frames: boot signal (`panelFrameBooted`), partitioned-SW cleanup; all frames: DEBUG diagnostics |
+| **Shared library** | |
+| `src/lib/types.ts` | `Pin`, `Settings`, `StorageData`, `PinFormState` |
+| `src/lib/defaults.ts` | `BROWSER_SIDEBAR_DEFAULTS` (layout limits, default pins/settings), `browserSidebarClamp`, `browserSidebarGetDefaultStorageData` |
 | `src/lib/storage.ts` | `chrome.storage.sync` read/write helpers |
-| `src/lib/embed-bypass.ts` | Syncs two `declarativeNetRequest` session rules: response-header stripping + `CORP: cross-origin` (rule 1) and `Sec-Fetch-*` spoofing (rule 2), for `sub_frame` requests to pinned domains |
-| `src/lib/cookie-auth.ts` | Re-writes pinned-site cookies to `sameSite: 'no_restriction'` + `cookies.onChanged` watcher so panel iframes reuse existing sessions |
-| `src/lib/pin-utils.ts` | Icon URL resolution, URL parsing, pin reindexing, `getCurrentPagePinDefaults()` |
-| `src/lib/types.ts` | Shared TypeScript interfaces |
-| `src/popup/*` | Full-page options UI (`options_ui`); mirrors inline settings |
-| `icons/apps/*` | Default pin SVG icons |
-| `tests/e2e/scrolltest.js` | Playwright-based e2e scroll test |
+| `src/lib/pin-utils.ts` | `resolveIconUrl`, `parsePinUrl`, `getUrlOrigin`, `computePinUrlSignature`, `getCurrentPagePinDefaults`, `reindexPins` |
+| `src/lib/embed-bypass.ts` | Syncs the two `declarativeNetRequest` session rules (§8, layers 1–2) |
+| `src/lib/cookie-auth.ts` | SameSite cookie relaxation + `cookies.onChanged` watcher (§8, layer 3) |
+| **Other** | |
+| `src/popup/*` | Full-page options UI (`options_ui`, opens in a tab). There is **no** toolbar popup: the toolbar icon toggles the sidebar |
+| `icons/apps/*` | Default pin SVG icons (web-accessible) |
+| `tests/e2e/*` | Playwright scripts, see [§12](#e2e-scripts) |
 
-**Content-script entries (manifest):**
+**Content-script entries**
 
 | Script | Frames | Run at | Purpose |
 |--------|--------|--------|---------|
-| `main.tsx` | top-level only | `document_start` | Sidebar UI |
-| `frameScrollGuard.ts` | all frames | `document_idle` | Scroll isolation for pinned embeds |
-| `frameDiagnostics.ts` | all frames | `document_start` | Boot signal + SW partition cleanup |
-
-**Build:** `npm run build` → `dist/`. Load unpacked from `dist/`.
+| `main.tsx` | top only (`all_frames: false`; also self-guards `window.top !== window.self`) | `document_start` | Sidebar UI |
+| `frameScrollGuard.ts` | all | `document_idle` | Scroll isolation for pinned embeds |
+| `frameDiagnostics.ts` | all | `document_start` | Boot signal, SW partition cleanup, diagnostics |
 
 ---
 
-## Permissions
+## 4. Permissions
 
-```json
-["storage", "scripting", "tabs", "windows", "cookies", "declarativeNetRequestWithHostAccess", "webRequest", "browsingData"]
-```
-
-- `storage` — pins/settings/`lastActivePinId`/`sidebarHidden` in `chrome.storage.sync`
-- `scripting` — fallback inject when toolbar click hits a tab without content script
-- `tabs` — `openTab` message (open a pin's URL in a new tab); sidebar hide broadcast
-- `windows` — window management for tab opening
-- `cookies` — re-writes pinned-site cookies with `sameSite: 'no_restriction'` so panel iframes reuse existing sessions (`lib/cookie-auth.ts`)
-- `declarativeNetRequestWithHostAccess` — lets the background worker strip `X-Frame-Options` / CSP response headers and rewrite `Sec-Fetch-*` request headers for pinned domains (`lib/embed-bypass.ts`); requires the existing `<all_urls>` host permission
-- `webRequest` — **debug-only** network trace for panel embeds: logs every `sub_frame` request/response/redirect/failure in the service-worker console (mirrored to the tab console via `netLog`) and forwards real network failures (`ERR_BLOCKED_BY_RESPONSE`, …) to the content script as `embedSubFrameFailed`
-- `browsingData` — partition repair (`repairEmbedPartition`): the full `browsingData.remove` is the only verified way to evict third-party storage-partitioned service workers serving cached `X-Frame-Options` responses
-- `host_permissions: ["<all_urls>"]` — content scripts on all normal pages; also backs the header-stripping rule above
+| Permission | Used for |
+|------------|----------|
+| `storage` | Pins, settings, `lastActivePinId`, `sidebarHidden` in `chrome.storage.sync` |
+| `scripting` | Fallback injection when the toolbar is clicked on a tab without the content script |
+| `tabs` | `openTab`, broadcasting to all tabs, `getZoom` / `onZoomChange` |
+| `windows` | Declared for tab/window management; no `chrome.windows.*` call exists in `src/` today |
+| `cookies` | Re-writing pinned-site cookies to `sameSite: 'no_restriction'` (`lib/cookie-auth.ts`) |
+| `declarativeNetRequestWithHostAccess` | Stripping framing response headers and rewriting `Sec-Fetch-*` for pinned domains (`lib/embed-bypass.ts`) |
+| `webRequest` | Debug trace of every `sub_frame` request, plus forwarding real network failures as `embedSubFrameFailed` |
+| `browsingData` | Partition repair (`repairEmbedPartition`) |
+| `host_permissions: <all_urls>` | Content scripts on every page; required by the DNR rules and cookie access |
 
 ---
 
-## Data model
-
-### Pin (stored in `chrome.storage.sync`)
+## 5. Data model and storage
 
 ```ts
-{
-  id: string,        // e.g. "discord" or "custom-1734567890"
-  name: string,
-  url: string,       // full https URL
-  iconUrl: string,   // extension-relative ("icons/apps/x.svg") or absolute http(s)
-  order: number      // strip sort order
+interface Pin {
+  id: string;       // "discord", or "custom-<timestamp>" for user pins
+  name: string;     // ≤ 32 chars (form maxLength)
+  url: string;      // normalized absolute URL (URL.href)
+  iconUrl: string;  // extension-relative ("icons/apps/x.svg") or absolute http(s); may be ""
+  order: number;    // strip position, kept 0..n-1 by reindexPins()
+}
+
+interface Settings {
+  panelWidth: number; // 300–1000, default 600
+  theme: string;      // persisted ('dark') but not read by the UI yet
 }
 ```
 
-### Settings
+**Storage keys** (all in `chrome.storage.sync`, so they follow the user across devices)
 
-```ts
-{
-  panelWidth: 600,
-  theme: 'dark'
-}
-```
+| Key | Purpose |
+|-----|---------|
+| `pins` | Ordered pin list |
+| `settings` | Panel width, theme |
+| `lastActivePinId` | Last clicked pin (written via the `saveLastActivePin` message) |
+| `sidebarHidden` | Strip hidden on all pages |
 
-### Storage keys
+Panel open state is **per-tab React state** and is not persisted. `chrome.storage.session` is no longer used, apart from a one-time removal of the stale pre-rename keys `gxPanelOpen` / `gxPanelPinId` at worker start.
 
-| Key | Location | Purpose |
-|-----|----------|---------|
-| `pins` | sync | Ordered list of pins |
-| `settings` | sync | Panel width, theme |
-| `lastActivePinId` | sync | Last clicked pin |
-| `sidebarHidden` | sync | Whether icon strip is hidden on all pages |
+**Defaults** (`src/lib/defaults.ts`)
 
-`chrome.storage.session` is **not** used for panel state anymore — the extension performs a one-time cleanup of the stale pre-rename keys (`gxPanelOpen` / `gxPanelPinId`) at worker startup. Panel open state is per-tab React state.
-
-### Defaults
-
-Defined in `src/lib/defaults.ts`:
-- `BROWSER_SIDEBAR_DEFAULTS.DEFAULT_PINS` — 7 default apps (Messenger, Instagram, X, YouTube, YouTube Music, ChatGPT, Claude)
-- `BROWSER_SIDEBAR_DEFAULTS.PANEL_MIN_WIDTH` / `PANEL_MAX_WIDTH` / `PANEL_WIDTH` — 300 / 1000 / 600px panel sizing limits
-- `BROWSER_SIDEBAR_DEFAULTS.STRIP_WIDTH` — 48px
-- `BROWSER_SIDEBAR_DEFAULTS.IFRAME_LOAD_TIMEOUT_MS` — 15000ms embed-failure net
+- `DEFAULT_PINS`: Messenger, Instagram, X, Reddit, Discord, ChatGPT, Claude.
+- `STRIP_WIDTH` 48, `PANEL_MIN_WIDTH` / `PANEL_MAX_WIDTH` / `PANEL_WIDTH` 300 / 1000 / 600.
+- `IFRAME_LOAD_TIMEOUT_MS` 15000: the outer embed-failure net.
+- Defaults are seeded only on first install (`onInstalled` when no `pins` key exists) or on **Reset to defaults**. Existing users never receive new default pins automatically.
 
 ---
 
-## UI structure (content script)
+## 6. Content-script UI
 
-Injected once per top-level frame into `#browser-sidebar-host` with **closed Shadow DOM**. React renders inside the shadow root.
+### Component tree
+
+`main.tsx` injects once per top-level frame into `#browser-sidebar-host` (appended to `<html>`) with a **closed** shadow root.
 
 ```
-.sidebar-root
-├── .reload-notice        ← shown when the extension context died (see Runtime guard)
-├── IconStrip            ← pin buttons + gear (settings)
-├── AppPanel             ← iframe panel (opens with .open — overlays the page)
-│   ├── .panel-header
+.sidebar-root                 (.hidden when sidebarHidden, .resizing during width gestures)
+├── .reload-notice            ← extension context died (see Runtime guard)
+├── IconStrip                 ← pin buttons + gear
+├── AppPanel                  ← .open overlays the page
+│   ├── .panel-header         (title, refresh, close)
 │   └── .panel-body
 │       ├── .loading-view
-│       ├── .panel-iframe ×N  ← warm frames (hidden ones at opacity: 0)
-│       ├── .fallback-view     ← "Open in new tab" + "Repair & retry"
+│       ├── .panel-iframe ×N  ← one per warm frame; inactive ones get .hidden
+│       ├── .fallback-view    ← "Open in new tab" + "Repair & retry"
 │       └── .resize-handle
-└── SettingsPanel        ← inline settings (opens with .open)
-    └── pinned list, pin current page, add/edit form, width, reset
+└── SettingsPanel             ← .open; pin list, current-page card, add/edit form, width, reset
 ```
 
-**Page layout (`page-shift.module.scss`, applied via `applyLayoutClasses()` in `sidebarUtils.ts`) — the panel OVERLAYS the page:**
+`SidebarApp.tsx` is organized into labelled sections: warm-frame bookkeeping → timers + iframe inspection → embed verification + failure handling → panel open / close / preload → strip interactions + iframe events → settings + pin management → panel resize → effects. Many values are mirrored into refs (`panelOpenRef`, `activePinIdRef`, `pinsRef`, `warmFramesRef`, …) so long-lived listeners and timers read current state without re-registering.
 
-| `html` class | Page margin | `--browser-sidebar-shift` |
-|--------------|-------------|---------------------------|
-| `browser-sidebar-strip-visible` | `margin-left: 48px` | `48px` |
-| `browser-sidebar-open` (panel or settings open) | `margin-left: 48px` — **still strip width; the panel overlays the page** | `48px` |
-| `browser-sidebar-hidden` | `margin-left: 0` (strip hidden via toolbar) | `0` |
+### Page layout
 
-CSS variables `--browser-sidebar-strip-width` and `--browser-sidebar-panel-width` are set on `document.documentElement` by `setCssVariables()`.
+`applyLayoutClasses()` (`sidebarUtils.ts`) sets exactly one class on `<html>`. The styles live in `page-shift.module.scss`. **The panel overlays the page**, so the page is only ever shifted by the strip width:
 
-### Fixed-element shift (`content/fixedShift.ts`)
+| `html` class | When | `margin-left` / `--browser-sidebar-shift` |
+|--------------|------|-------------------------------------------|
+| `browser-sidebar-strip-visible` | strip only | strip width |
+| `browser-sidebar-open` | panel or settings open | strip width (panel overlays) |
+| `browser-sidebar-hidden` | hidden via toolbar | `0` |
+| `browser-sidebar-resizing` (extra) | live width gesture | disables the 0.2s margin/translate transitions |
 
-The page-shift stylesheet only moves normal-flow content — `position: fixed` elements are anchored to the viewport and would otherwise sit underneath the sidebar. `fixedShift.ts` shifts them:
+`--browser-sidebar-strip-width` and `--browser-sidebar-panel-width` are written on both `documentElement` and the sidebar root (`setCssVariables`, `setPanelWidthCss`).
 
-- Every **visible fixed element whose left edge starts inside the sidebar area** gets a `translate: var(--browser-sidebar-shift)` override (the standalone CSS `translate` property, so the site's own `transform` — and the fixed element's scroll pinning — are never touched).
-- **Full-viewport-width bars** also get `width: calc(<computed> - var(--browser-sidebar-shift))` so they don't stick out past the window's right edge.
-- Because both overrides are driven by the same live CSS variable as the page margin, drag-resizing updates everything in one reflow and open/close animates in step.
+### Fixed-element shift (`fixedShift.ts`)
 
-**Sweep strategy (important):** `refreshFixedElementShift()` performs a FULL sweep (release everything, re-measure, re-apply) — call it **only on explicit state changes** (open / close / hidden / committed panel width; `SidebarApp` calls it in the layout effects). DOM mutations are handled incrementally by a `MutationObserver` with a 250ms debounce: added subtrees are checked for new intruders, removed nodes are released, and attribute changes are verified per element. Managed elements are never released and re-applied just because the page mutated — releasing and re-capturing widths every tick makes site JS react to our writes, which re-triggers the observer in a visible resize loop (this exact fight was observed on github.com).
+The `html` margin only moves normal-flow content. Viewport-anchored elements, meaning `position: fixed` elements plus `position: absolute` elements whose containing block is the initial containing block (e.g. YouTube's `ytd-app`), would stay under the strip. So:
 
-Known limits: elements inside same-origin iframes / site shadow roots are not reached; fixed elements entirely right of the sidebar are left alone; a site that writes inline `translate`/`width` on a managed element after us wins until the next state change.
+- Each visible such element whose left edge is inside the strip gets `translate: var(--browser-sidebar-shift)`. This is the standalone `translate` property, so the site's own `transform` is untouched. The element is marked with `data-browser-sidebar-fixed-shift`, and its original inline values are saved for release.
+- Full-viewport-width bars also get `width: calc(<computed> - var(--browser-sidebar-shift))`.
+- Descendants of a managed element are never marked again (no double shift).
+- Both overrides read the same live CSS variable as the page margin, so resize and open/close stay in step.
 
-### Panel resize (live width gestures)
+**Sweep strategy (important):** `refreshFixedElementShift()` does a **full sweep** (release all, re-measure, re-apply). Call it **only on explicit state changes**: layout class flip, committed panel width, zoom change. DOM mutations are handled **incrementally** by a 250ms-debounced `MutationObserver` that checks added subtrees, releases removed nodes, and re-verifies `class`/`style` changes. Re-running full sweeps on mutations caused a visible resize fight with site JS on github.com.
 
-The panel width is changed two ways: dragging the `.resize-handle` on the panel's right edge, or the width slider in settings. Both gestures share one architecture designed to keep the embedded site stable while the panel resizes.
+### Browser-zoom compensation
 
-**Pointer capture, not document listeners.** The handle's `onPointerDown` starts the drag and calls `setPointerCapture` on the handle element; `pointermove` / `pointerup` / `pointercancel` are attached to the handle, not `document`. Cross-origin iframes swallow document-level `mousemove` events, and pointer capture keeps delivering events even when the cursor leaves the window mid-drag.
+The sidebar lives inside the page, so Ctrl +/- zoom would scale it. To keep it at constant physical size:
 
-**Iframe width-lock.** During any resize gesture (handle drag OR slider), the iframe is frozen at its pre-gesture width via inline `style.width` (clipped by the panel's `overflow: hidden`), and `.sidebar-root.resizing .panel-iframe { pointer-events: none }` stops the embed from eating input. The embed reflows **exactly once, on release** — per-frame iframe reflow is what made heavy embeds (chatgpt.com) jank and crash. On release the inline width is cleared so the frame snaps to the committed panel size.
+- At mount, `SidebarApp` asks the background for the tab's zoom (`getZoomFactor` → `chrome.tabs.getZoom`; content scripts can't call `chrome.tabs`). Later changes arrive as `pageZoomChanged` from `tabs.onZoomChange`.
+- `setSidebarZoomFactor()` counter-scales `.sidebar-root` by `scale(1/zoom)` (with `height: calc(100vh * zoom)`). On the page side it sets `--browser-sidebar-strip-width` to `STRIP_WIDTH / zoom` CSS px, so the page margin and fixed-element shift stay 48 device px. At 100% the inline transform is removed entirely.
+- Drag-resize multiplies pointer deltas by the zoom factor so the panel edge tracks the cursor.
 
-**CSS variable only during the gesture.** Live width updates never touch React state: they write the `--browser-sidebar-panel-width` CSS variable imperatively through a single `requestAnimationFrame` throttle (`sliderFrameRef` / `sliderWidthRef` for the slider path, a local `frame` ref for the drag path), so the sidebar tree — including the embed iframe — does not re-render on every pointer event. React state and `chrome.storage.sync` commit once at gesture end (`onPanelWidthCommit` / drag `onEnd`).
+### Panel resize
 
-**Page tracking.** `.resize-handle` has `touch-action: none` (pointer events instead of touch scrolling), `.app-panel` has `contain: layout paint` (cheap layout containment during the gesture), and the host page gets the `browser-sidebar-resizing` class for the duration, which disables the `margin-left 0.2s` transition so the shifted page tracks the cursor 1:1 instead of rubber-banding. Fixed elements managed by `fixedShift.ts` get their `translate` transition disabled the same way.
+Width changes come from the `.resize-handle` drag or the settings slider. Both follow the same design:
+
+- **Pointer capture, not document listeners.** `setPointerCapture` on the handle; `pointermove`/`pointerup`/`pointercancel` listen on the handle. Cross-origin iframes swallow document-level mouse events.
+- **Iframe width lock.** For the whole gesture the active iframe is frozen at its pre-gesture inline width (clipped by the panel's `overflow: hidden`), and `.sidebar-root.resizing .panel-iframe` gets `pointer-events: none`. The embed reflows **once, on release**. Per-frame reflow made heavy embeds (chatgpt.com) jank and crash.
+- **CSS variable only, once per frame.** Live updates write `--browser-sidebar-panel-width` through a `requestAnimationFrame` throttle (`setPanelWidthCss`) and never touch React state. The slider keeps its displayed value in `SettingsPanel` local state.
+- **Single commit.** `commitPanelWidth()` runs once at gesture end for both paths. It updates React state, writes storage, and calls `broadcastPinsUpdated`, so every open tab converges.
+- **Cross-tab convergence net.** A `chrome.storage.onChanged` listener applies width changes made elsewhere (other tabs, options page, other devices). It ignores them while a local gesture is live (`widthGestureActiveRef`).
+- Supporting CSS: `.resize-handle { touch-action: none }`, `.app-panel { contain: layout paint }`, and the `browser-sidebar-resizing` page class.
 
 ### Warm frames (instant pin switching)
 
-`SidebarApp.tsx` keeps up to `WARM_FRAME_LIMIT` (4) panel iframes mounted but hidden — each warm cross-origin frame is a live renderer process, so the cap is deliberate.
+Up to `WARM_FRAME_LIMIT` (4) panel iframes stay mounted. Each warm cross-origin frame is a live renderer process, so the cap is deliberate.
 
-- **One dedicated iframe per pin**, keyed `` `${pinId}:${src}:${nav}` `` where `nav` is a monotonic per-pin navigation counter — a forced refresh bumps the key so React remounts a pristine frame (cross-origin reuse of a single frame element across pins was flaky).
-- **Insertion-stable order:** the warm-frame array is *never reordered* — moving an iframe in the DOM destroys its browsing context and forces a full reload. LRU recency lives in each entry's `lastUsed` timestamp; eviction (never the active pin) happens only when a new frame would exceed the limit.
-- **Hidden, not frozen:** inactive frames are kept at `opacity: 0` with `pointer-events: none` (`.panel-iframe.hidden`) — never `display: none`, which would freeze the frame's rAF/CSS animations. Documents stay alive, so switching pins is instant.
-- **Speculative preload:** hovering a pin for `PIN_PRELOAD_HOVER_DELAY_MS` (150ms) or pressing it mounts its hidden frame in the background so the click that follows is warm-instant. Preloads never evict a ready frame.
-- **Lifecycle:** a frame's entry is dropped when its pin is deleted or its URL is edited (`pinsUpdated` handler), on embed failure (the corpse is not reused), and on LRU eviction. Inactive frames that finish loading while hidden are marked ready so the next open is instant.
+- **One iframe per pin**, keyed `` `${pinId}:${src}:${nav}` ``. `nav` is a monotonic per-pin counter, so a forced refresh remounts a pristine frame.
+- **Insertion-stable order.** The array is never reordered, because moving an iframe in the DOM destroys its browsing context. LRU recency is the `lastUsed` timestamp. The active pin is never evicted.
+- **Hidden, not frozen.** Inactive frames use `.panel-iframe.hidden` (`opacity: 0; pointer-events: none`), never `display: none`, which would freeze rAF/animations and stall background loads.
+- **Speculative preload** (`preloadPin`): after a 150ms hover dwell (`PIN_PRELOAD_HOVER_DELAY_MS`) or on pointer-down, the pin's hidden frame is mounted. A preload never evicts a frame; it is skipped when the cache is full.
+- **Dropped** when the pin is deleted or its URL changes (`pinsUpdated`), on embed failure, on refresh, and on LRU eviction. Background frames that finish loading are marked `ready`.
 
-### Keyboard isolation
+### Input isolation
 
-`keyboardIsolation.ts` stops host-page keyboard shortcuts from intercepting input inside sidebar form fields (settings add/edit form).
+- **Keyboard** (`keyboardIsolation.ts`), two layers. A document capture-phase listener, registered at `document_start`, calls `stopImmediatePropagation()` on key events targeting sidebar `input`/`textarea`/`select`. A bubble-phase stop on the host keeps every sidebar key event from reaching page listeners on `document`/`window`.
+- **Scroll, sidebar → page.** A non-passive wheel listener on `.sidebar-root` calls `preventDefault()` except over `.icon-strip` / `.settings-body`, which contain their own overscroll via CSS.
+- **Scroll, embed → page.** Wheel events over a cross-origin iframe never reach the parent, so chaining can only be stopped inside the frame. `frameScrollGuard.ts` asks `shouldGuardScroll`, and pinned-origin frames get `overscroll-behavior: contain` on `html` and `body`. Unrelated iframes keep default behavior.
 
-### Scroll isolation
+### Dismissal
 
-Two directions, two mechanisms:
+The panel (or settings) closes on:
 
-- **Sidebar chrome → host page:** wheel events over non-scrollable sidebar surfaces (panel header, fallback view, resize handle) are `preventDefault()`-ed in `SidebarApp`'s root wheel listener. Scrollable surfaces (`.icon-strip`, `.settings-body`) contain their own overscroll via CSS.
-- **Embedded site → host page:** wheel events over a cross-origin iframe never reach the parent document, so scroll chaining at the embed's boundary can only be stopped *inside* the frame. `frameScrollGuard.ts` (runs in every subframe) asks the background (`shouldGuardScroll`) whether its origin belongs to a pinned site; pinned embeds get `overscroll-behavior: contain` on their document root, so hitting the embed's scroll boundary never chains to the page underneath. Unrelated third-party iframes on normal pages keep default behavior.
+- clicking the same pin again, the panel's ✕, or the gear (which swaps to settings);
+- a click anywhere on the page outside the sidebar. A capture-phase document listener handles this: clicks inside the shadow root retarget to the host, and clicks inside the cross-origin embed never reach the document;
+- **leaving the tab** (`visibilitychange` → hidden). Switching back shows no panel.
 
-### Runtime guard (`content/runtimeGuard.ts`)
+Closing settings by **any** path discards a half-filled add/edit form (an effect watches the open → closed transition).
 
-When the extension is reloaded or updated, content scripts already injected into open tabs are orphaned: every `chrome.runtime.*` / `chrome.storage.*` call they make throws `Extension context invalidated`. One unguarded throw inside a React render takes down the whole sidebar for that page.
+### Runtime guard (`runtimeGuard.ts`)
 
-- `browserSidebarRuntimeAlive()` — canonical liveness check (`chrome.runtime?.id` evaluates to `undefined`, doesn't throw, once invalidated)
-- `browserSidebarSafeSendMessage()` — no-throw `runtime.sendMessage`; callers treat `undefined` as "no answer" and fall back to local behavior
-- A 5s interval in `SidebarApp` watches for invalidation and shows a **"Extension reloaded — refresh this page"** notice (`runtimeDead` state); the React tree keeps rendering, only messaging dies.
+After an extension reload/update, content scripts already in open tabs are orphaned, and every `chrome.runtime.*` / `chrome.storage.*` call throws `Extension context invalidated`. One throw inside a React render would kill the sidebar.
+
+- `browserSidebarRuntimeAlive()`: `chrome.runtime?.id` is `undefined` (no throw) once invalidated.
+- `browserSidebarSafeSendMessage()`: no-throw `sendMessage`; `undefined` means "no answer".
+- `resolveIconUrl()` caches resolved icon URLs and fails soft, so icons keep rendering.
+- A 5s interval sets `runtimeDead` and shows **"Extension reloaded — refresh this page"**. The UI keeps rendering; only messaging is dead.
 
 ---
 
-## Core user flows
+## 7. User flows
 
-### 1. Click a pin (`handlePinClick` in `SidebarApp.tsx`)
+### Click a pin (`handlePinClick`)
 
 ```
-Click pin
+click pin
   → close settings if open
-  → if same pin + panel open → closePanel() (toggles the panel closed, clears the pin)
-  → set activePinId, save last active pin
-  → setPanelOpen(true), openPanelForPin(pin)   ← always try the panel first
+  → same pin and panel open?  → closePanel()  (clears activePinId; done)
+  → set activePinId, send saveLastActivePin
+  → setPanelOpen(true), openPanelForPin(pin)      ← always try the panel first
 ```
 
-Clicking anywhere on the page outside the sidebar (capture-phase document listener) closes the open panel — clicks inside the closed shadow root are retargeted to the host element; clicks inside the cross-origin embed never reach this document.
+`closePanel()` keeps warm frames mounted and clears the active pin. `lastOpenedPinIdRef` survives the close.
 
-**Design goal (native-sidebar parity):** the in-page panel opens for *every* pin. `lib/embed-bypass.ts` strips blocking response headers for pinned domains in the background, so the iframe attempt is expected to succeed for the vast majority of sites. Only a genuine runtime failure shows the in-panel fallback view.
+### Open the panel (`openPanelForPin`)
 
-### 2. Open panel (`openPanelForPin`)
+1. Reset per-open guards: `embedFailureHandled`, the auto-repair budget, and the verify generation.
+2. **Warm fast path.** If the pin's frame is mounted with the same URL, is `ready`, **and** has proven its scripts run (boot signal, or same-origin), show it instantly with no network and no rule gate. A `ready` frame without that proof is re-verified instead.
+3. **Already loading in background.** Show the spinner, restart verification, and arm the load timeout.
+4. **Cold open.** `await ensureEmbedRulesReady()`, bump the nav counter, clear the origin's stale boot signal, mount a fresh iframe, and arm the 15s timeout.
 
-1. Reset guards (`embedFailureHandled`, auto-repair budget, verify generation), drop any stale boot signal for the pin's origin.
-2. **Warm-frame fast path:** if a frame for this pin is already mounted with the same URL and `ready`, and the frame's scripts have *proven* they run (boot signal, or same-origin), reuse it instantly — no network, no rule-gate round-trip.
-3. If a frame for this pin is already loading in the background: show the spinner, re-arm verification and the 15s timeout net.
-4. Otherwise: `await ensureEmbedRulesReady()` (see **Embed rules gating** below), bump the nav counter, mount a fresh iframe with `src = pin.url`, and arm the **15s timeout** (`IFRAME_LOAD_TIMEOUT_MS`) → `handleEmbedFailure`.
+Panel iframes are sandboxed with `allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads`. `allow-same-origin` keeps the frame's real origin so cookies and verification work.
 
-Panel iframes are **sandboxed** (`allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads`) — `allow-same-origin` keeps the frame's real origin so cookies/verification work; the rest keep the embed functional without granting it the top document.
+### Settings
 
-### 3. Settings (gear icon)
+The gear opens `SettingsPanel` (closing the app panel). It offers:
 
-Opens `SettingsPanel` (same width as app panel). Closes app panel when opened.
+- **Pin current page**: one-click add from `getCurrentPagePinDefaults()` (title, URL, favicon), or **Edit before adding**.
+- **+ Add website**: pre-fills the form with the current page and scrolls to it.
+- **Add / edit** by name, URL, and optional icon URL. Quick-pin rejects a URL that is already pinned; the manual form does not check. Editing the open pin reloads the panel.
+- **Delete** and **drag-to-reorder** (HTML5 DnD; the strip supports drag too).
+- **Width slider** and **Reset to defaults** (`resetStorage`).
 
-Features:
-- **Pin current page** — preview card with one-click add or "Edit before adding" (uses `getCurrentPagePinDefaults()` for title, URL, favicon)
-- **+ Add website** — scrolls to add form and pre-fills current page
-- Add or **edit** pin manually: name, URL, optional icon URL (duplicate URLs are rejected)
-- List pins with delete
-- **Drag-and-drop reorder** (HTML5 DnD, updates `order`, calls `saveAndBroadcast`)
-- Panel width slider
-- Reset to defaults
+Every change goes through `saveAndBroadcast()`: a `chrome.storage.sync` write, then `broadcastPinsUpdated`. The background then pushes `pinsUpdated` to all tabs and re-syncs embed support (DNR rules + cookies).
 
-Icon strip footer has **gear (settings) only** — no separate "+" button on the strip.
+The **options page** (`src/popup/PopupApp.tsx`) offers the same pin management and width control and uses the same messages.
 
-`saveAndBroadcast()` writes to `chrome.storage.sync` and sends `broadcastPinsUpdated` → all tabs re-render strip; the background also re-syncs embed-bypass rules and relaxes pinned-site cookies.
+### Toolbar icon (`chrome.action.onClicked`)
 
-### 4. Toolbar icon click (`background.ts`)
-
-Toggles `sidebarHidden` in sync storage and broadcasts `setSidebarHidden` to all tabs. On failure (content script not loaded), fallback `executeScript` injects the content script.
-
-**Guard:** `isInjectableUrl()` — skips `chrome://`, `about:`, etc.
+The toolbar icon toggles `sidebarHidden` in sync storage and sends `setSidebarHidden` to the clicked tab, then broadcasts it to all tabs. If the clicked tab has no content script, the background injects it with `scripting.executeScript`. `isInjectableUrl()` skips non-`http(s)` tabs (`chrome://`, `about:`, …).
 
 ---
 
-## Embed bypass — how sites that normally block iframes are made to work
+## 8. Embed pipeline
 
-The sidebar panel embeds pinned sites in a **cross-origin iframe** inside the page — exactly the context many sites actively block. Getting those sites to load is a layered strategy; each layer targets a different kind of block.
+The panel embeds pinned sites in a **cross-origin iframe**, the exact context many sites block. Each layer below targets a different kind of block.
 
-### Layer 1 — DNR response-header stripping (`lib/embed-bypass.ts`, rule ID 1)
+### Layer 1 — Response-header stripping (DNR rule 1)
 
-Sites block embedding with response headers. Chrome enforces them before any page script runs, so they must be stripped from the actual response. The rule strips:
-- `X-Frame-Options` (`DENY` / `SAMEORIGIN`)
-- CSP `frame-ancestors`, delivered via `Content-Security-Policy`, `Content-Security-Policy-Report-Only`, or legacy `X-Content-Security-Policy`
-- `Cross-Origin-Embedder-Policy` (COEP) — stripped so the embedded app's own subresources are not restricted by the response's COEP requirements
+Chrome enforces framing headers before any page script runs, so they must be removed from the response. `browserSidebarSyncEmbedBypassRules()` installs a session rule for `sub_frame` requests to the pinned hostnames (`www.` stripped; `requestDomains` also matches subdomains). The rule:
 
-Because the extension has `<all_urls>` host permission, a `declarativeNetRequest` **session rule** (fixed ID 1) rewrites `sub_frame` responses for pinned domains. The rule also **sets `Cross-Origin-Resource-Policy: cross-origin`** on the response. That injection is required when the host page enforces COEP `require-corp`: otherwise the iframe load is blocked by the host's COEP policy even with every blocking header already stripped.
+- **removes** `X-Frame-Options`, `Content-Security-Policy`, `Content-Security-Policy-Report-Only`, `X-Content-Security-Policy`, and `Cross-Origin-Embedder-Policy`;
+- **sets** `Cross-Origin-Resource-Policy: cross-origin`. This is required when the host page enforces COEP `require-corp`.
 
-### Layer 2 — Fetch-metadata spoofing (`lib/embed-bypass.ts`, rule ID 2)
+### Layer 2 — Fetch-metadata spoofing (DNR rule 2)
 
-Some sites detect framing server-side via Fetch Metadata request headers. Meta (messenger.com) is the canonical case: it answers any request carrying `Sec-Fetch-Dest: iframe` with a generic "Your Request Couldn't be Processed" error page (error 1357005).
+Some sites detect framing server-side from request headers. Meta (messenger.com), for example, answers `Sec-Fetch-Dest: iframe` with "Your Request Couldn't be Processed". Rule 2 makes the navigation look like a typed address-bar visit: `Sec-Fetch-Dest: document`, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Site: none`, `Sec-Fetch-User: ?1`, with `Referer` removed.
 
-Rule 2 rewrites `sub_frame` request headers for pinned domains so the navigation looks like a user-typed top-level visit:
-- `Sec-Fetch-Dest: document`
-- `Sec-Fetch-Mode: navigate`
-- `Sec-Fetch-Site: none`
-- `Sec-Fetch-User: ?1`
-- `Referer` removed
+Rule 2 is committed in a **separate `updateSessionRules` call**, so a rejected Sec-Fetch rewrite can't take rule 1 down with it.
 
-Together these match a typed address-bar navigation exactly, so the request carries no sign of being embedded. DNR can set or remove `Sec-Fetch-*` headers but cannot append to them; the "document / navigate / none / ?1 + no Referer" set is the proven production pattern.
+**When the rules are synced** (`browserSidebarSyncEmbedSupport`: rules first, then cookies): `onInstalled`, `onStartup`, `broadcastPinsUpdated`, `resetStorage`, `ensureEmbedRules` (on signature change), and **at the top level of every service-worker wake**. Session rules die with the browser session, and Chrome skips `onStartup` on crash-restore. The sync is idempotent (`removeRuleIds` + `addRules`).
 
-Rule 2 is committed in a **separate `updateSessionRules` call** from rule 1 on purpose: if Chrome ever rejects the Sec-Fetch rewrite, the header-strip rule still applies. Both rules are synced by `browserSidebarSyncEmbedBypassRules` at `onInstalled`, `onStartup`, `broadcastPinsUpdated` (pin/settings changes), `resetStorage`, **and on every service-worker wake** (top-level `background.ts` re-assert). The wake-time re-assert exists because DNR session rules are cleared when the browser session ends and Chrome does not fire `onStartup` on crash-restore sessions — without it, pinned sites could hit "refused to connect" after a browser restore until the user touched a pin. The sync is idempotent (`removeRuleIds` + `addRules`), so re-running it per wake is safe.
+### Layer 3 — Cookie/session reuse (`cookie-auth.ts`)
 
-### Layer 3 — Cookie/session reuse (`lib/cookie-auth.ts`)
+The panel is a third-party context, so Chrome does not send `SameSite=Lax`/`Strict`/unspecified cookies. Signed-in sites (e.g. claude.ai) would show a login page. The cookie jar is browser-wide, so re-writing those cookies lets the iframe reuse the user's normal session:
 
-The panel iframe is a third-party context: it lives on whatever page the user is browsing, so its requests are cross-site. Chrome does not attach `SameSite=Lax` / `SameSite=Strict` (or unspecified) cookies to cross-site sub-frame requests — signed-in sites like claude.ai would show a login page in the panel even though the browser already holds a valid session.
+- `browserSidebarRelaxPinnedSiteCookies()` re-writes every **Secure** pinned-domain cookie with `sameSite: 'no_restriction'` (which requires Secure). It preserves domain vs. host-only and session vs. persistent.
+- `browserSidebarWatchPinnedSiteCookies()` is a `cookies.onChanged` watcher registered synchronously at worker top level. It re-relaxes cookies that sites re-issue with restrictive SameSite values. Its own writes carry `no_restriction` and are ignored, so it can't loop.
 
-The `cookies` permission lets the extension re-write pinned-site cookies with `sameSite: 'no_restriction'` via the `chrome.cookies` API (the cookie jar is shared browser-wide, so the iframe reuses the exact session from normal tabs):
-- `browserSidebarRelaxPinnedSiteCookies()` — runs at `onInstalled` / `onStartup` / `broadcastPinsUpdated` / `resetStorage`; flips every Secure pinned-domain cookie to `no_restriction` (`no_restriction` requires the Secure attribute).
-- `browserSidebarWatchPinnedSiteCookies()` — a top-level `cookies.onChanged` watcher, registered synchronously at worker top level so it survives service-worker wakes. It re-flips cookies when sites re-issue them with restrictive SameSite values (login refreshes, session rotation). Our own re-writes already carry `no_restriction` and are filtered out, so the watcher cannot loop.
+### Layer 4 — Service-worker partition defense
 
-### Layer 4 — Service-worker partition defense (`frameDiagnostics.ts` + `repairEmbedPartition`)
+A pinned site's service worker registered in the **(host-site, site) storage partition** can answer later panel navigations **from cache with `X-Frame-Options` intact**. DNR and `webRequest` never see those responses. This is the x.com "refused to connect" failure.
 
-A pinned site's service worker registered in the **(host-site, site) third-party storage partition** can answer later panel navigations **from its cache with `X-Frame-Options` intact** — DNR and `webRequest` never see those responses, so no header rule can strip them. This is the x.com "refused to connect" failure mode.
+- **Continuous (in-frame).** `frameDiagnostics.ts`, in pinned-origin frames, unregisters all service workers in its partition immediately, every 3s, and on `pagehide`. Blocked frames never run scripts, so this only helps after a successful load.
+- **Repair (`repairEmbedPartition`).** Calls `browsingData.remove({}, { serviceWorkers, cache })` with **no origin filter**. The origin-scoped variant leaves partitioned SWs in place. The repair clears these for **all sites**, so it is:
+  - **automatic once per panel-open**, with a global 30s cooldown (`AUTO_REPAIR_COOLDOWN_MS`), then retried in a fresh frame;
+  - **manual** via **Repair & retry**.
 
-Two defenses:
-- **Continuous (in-frame):** `frameDiagnostics.ts`, running in every pinned-origin subframe, unregisters all service workers in its partition every 3s plus a `pagehide` sweep, keeping the partition clean while the panel is in use. (Blocked frames never run scripts, so this only helps *after* a successful load.)
-- **Repair (`repairEmbedPartition` message):** the only *verified* way to evict a poisoned partition is the **full `browsingData.remove`** (no origins filter — the origins-scoped code path leaves partitioned SWs in place), clearing `serviceWorkers` + `cache` for **all** sites. It is invoked:
-  - **Automatically, once per panel-open** with a global 30s cooldown (`AUTO_REPAIR_COOLDOWN_MS`) — a persistently failing site can never trigger a SW-wipe storm. The retry re-navigates in a fresh frame.
-  - **Manually** via the fallback view's **Repair & retry** button.
+### Layer 5 — Runtime verification (`SidebarApp.tsx`)
 
-### Layer 5 — Runtime verification + graceful failure (`SidebarApp.tsx`)
+Some sites still refuse framing from page code (JS frame-busting, OAuth checks). The content script detects that instead of leaving a dead frame on screen.
 
-Even with headers, cookies, and SW partitions handled, some sites refuse framing from inside page code (JS frame-busting, app-level checks). The content script detects the failure instead of leaving a dead frame on screen.
+**Core problem:** from the parent, a blocked frame and a committed cross-origin document look the same (SecurityError on `location`, no `contentDocument`). The discriminator is the **frame's boot signal**. A committed pinned-origin document runs `frameDiagnostics.ts`, which (after `shouldManageServiceWorkers` confirms the origin) sends `panelFrameBooted`. The background relays it to the tab, and the sidebar adds the origin to `bootedOriginsRef`. A blocked frame never runs scripts. Boot signals for an origin are cleared before every fresh navigation or preload.
 
-**The core problem:** from the parent, a blocked frame and a committed cross-origin document are *identical* (SecurityError on `location` access, no `contentDocument` either way). The discriminator is the **frame's own boot signal**: a committed document runs `frameDiagnostics.ts` at `document_start` and reports `panelFrameBooted` (relayed by the background to the tab's content script); a blocked frame never runs scripts. Origins with a proven boot are cached in `bootedOriginsRef` and cleared before each fresh navigation so a blocked retry can't inherit a stale success signal.
+Each verification chain carries a **generation number**. Any open, close, or failure bumps it, cancelling stale timers.
 
-Verification pipeline:
-- **15s `IFRAME_LOAD_TIMEOUT_MS`** — the outer failure net. If load/verification has not succeeded by then, `handleEmbedFailure` fires.
-- **Boot-signal grace (`IFRAME_BOOT_GRACE_MS` = 2000ms)** — for cross-origin frames (opaque `location`), verification waits this long for the boot signal before declaring the frame blocked at commit.
-- **250ms about:blank stall poll** — a load event while the frame is still on `about:blank` means the navigation is mid-commit (heavy sites like chatgpt.com can take seconds to commit) or permanently blocked. The poll never fails on its own: a real commit flips the href, a pin change cancels via the generation bump, and the 15s timeout declares genuine failure. Failing fast from here used to misclassify slow-but-healthy embeds as blocked.
-- **Background net-failure signal (`embedSubFrameFailed`)** — `webRequest.onErrorOccurred` in the background forwards real network failures (`ERR_BLOCKED_BY_RESPONSE`, `ERR_CONNECTION_*`, …) for pinned origins to the content script; this catches blocks the in-page checks cannot see.
-- **Strict error-page matching** — for readable (same-origin/sandboxed) frames, an embed counts as blocked only when the frame's location is `chrome-error:`, OR its body `innerText` is **≤250 chars** (`IFRAME_ERROR_PAGE_MAX_TEXT_LENGTH`) AND matches `EMBED_BLOCKED_PATTERN`. Live site content or inline scripts that happen to mention phrases like "failed to load" can never false-positive.
-- **Post-success watchdog** — after a successful load, a **4s window at a 500ms interval** keeps checking. Some blocked embeds commit an error page late, after the load event was already treated as success; the watchdog catches that and shows the fallback view instead of leaving a dead frame on screen.
+| Check | Detail |
+|-------|--------|
+| Load timeout | 15s `IFRAME_LOAD_TIMEOUT_MS` net → `handleEmbedFailure` |
+| `about:blank` stall poll | every 250ms; **never fails on its own**. Slow commits (chatgpt.com) used to be misclassified |
+| Boot-signal grace | cross-origin frames: wait up to 2000ms (`IFRAME_BOOT_GRACE_MS`, polled every 100ms) for the boot signal, else "blocked at commit" |
+| Strict error-page match | readable frames only: `chrome-error:` location, **or** body text ≤ 250 chars matching `EMBED_BLOCKED_PATTERN`. Live content mentioning "failed to load" can't false-positive |
+| Network failure | background `webRequest.onErrorOccurred` → `embedSubFrameFailed` for pinned hosts |
+| Post-success watchdog | 4s at 500ms intervals: catches error pages that commit late |
 
-A genuine failure lands on the **in-panel fallback view**: pin icon, pin name, "This site could not load in the panel.", an **Open in new tab** button that sends the `openTab` message to the background (`chrome.tabs.create`), and a **Repair & retry** button (see Layer 4). No window ever opens automatically.
+On failure, `handleEmbedFailure` evicts the frame, tries one auto-repair (Layer 4) if allowed, and otherwise shows the **fallback view**: pin icon and name, "This site could not load in the panel.", **Open in new tab** (`openTab` → `chrome.tabs.create`), and **Repair & retry**.
 
-### Embed rules gating (`ensureEmbedRules`)
+### Rule gating (`ensureEmbedRules`)
 
-Even the wake-time re-assert can lose a race against an eager panel navigation (the `sub_frame` request can reach the network before a just-woken worker finishes installing the rules). Every **cold** panel navigation is therefore gated: `openPanelForPin` / `preloadPin` first await the background's `ensureEmbedRules` response (which resolves only after both `updateSessionRules` calls and the cookie relaxation have committed) before setting the iframe `src`. If messaging fails the navigation proceeds anyway and the 15s load-timeout net still guards it.
+A just-woken worker may still be installing rules when the panel navigates. Every **cold** navigation (`openPanelForPin`, `preloadPin`) therefore awaits `ensureEmbedRules`, which resolves after the rules and cookie relaxation commit. On messaging failure, navigation proceeds and the 15s net still applies. Two fast paths, both keyed by `computePinUrlSignature(pins)` (the sorted pinned-URL list):
 
-Two fast paths avoid the round-trip when it's redundant:
-- **Background (signature):** the worker caches the sorted pinned-URL signature it last synced this lifetime; a matching `ensureEmbedRules` answers immediately (rules live for the whole browser session; the cookie watcher covers rotation — a full re-sync per panel open was pure latency).
-- **Content (`EMBED_RULES_CACHE_TTL_MS` = 60s):** the sidebar skips the `sendMessage` entirely within 60s of a successful assert for the same signature.
-
-### Known limits
-
-- **JS frame-busting / app-level checks** (mainly OAuth sign-in flows like Google/Microsoft) can't be fixed by header rewriting — the site detects the embedded context from inside its own scripts. These are exactly the sites that reach the fallback view.
-- **Blocking third-party cookies in Chrome settings** breaks iframe cookies regardless of SameSite rewriting.
-- **Storage partitioning still applies** — localStorage/IndexedDB inside the third-party iframe stays partitioned; cookie-auth only restores cookie-based sessions.
-- **Repair is global** — `browsingData.remove` clears every site's service workers, so it must stay user-visible (auto path is once-per-open with a cooldown), never a silent loop.
+- **Background:** if the signature matches what was synced this worker lifetime, it answers immediately.
+- **Content:** within 60s (`EMBED_RULES_CACHE_TTL_MS`) of a successful assert for the same signature, the message is skipped entirely.
 
 ---
 
-## Message protocol
+## 9. Message protocol
 
-| Action | Direction | Handler | Purpose |
-|--------|-----------|---------|---------|
-| `openTab` | content → background | `background.ts` | Open URL in new tab |
-| `saveLastActivePin` | content → background | `storage.ts` | Persist active pin id |
-| `broadcastPinsUpdated` | popup/settings → background | `background.ts` | Sync pins to all tabs + re-sync embed-bypass rules + relax pinned-site cookies |
-| `pinsUpdated` | background → content | `SidebarApp.tsx` | Re-render strip/settings; drop warm frames for deleted/edited pins |
-| `setSidebarHidden` | background → content | `SidebarApp.tsx` | Show/hide icon strip |
-| `getStorageData` | popup → background | `storage.ts` | Load pins/settings |
-| `resetStorage` | popup/settings → background | `storage.ts` | Restore defaults + re-sync embed-bypass rules + relax pinned-site cookies |
-| `ensureEmbedRules` | content → background | `background.ts` | Panel-navigation gate: resolve only after DNR rules + cookie relax are committed (signature fast path) |
-| `repairEmbedPartition` | content → background | `background.ts` | Full `browsingData.remove` (serviceWorkers + cache) to heal a poisoned SW partition, then retry |
-| `shouldGuardScroll` | frame script → background | `background.ts` | Is this subframe's origin a pinned site? (→ apply `overscroll-behavior: contain`) |
-| `shouldManageServiceWorkers` | frame script → background | `background.ts` | Is this subframe's origin a pinned site? (→ run partition SW cleanup) |
-| `panelFrameBooted` | frame script → background → content | `background.ts` → `SidebarApp.tsx` | Frame's scripts are running — proof of a committed document; the cross-origin verification success gate |
-| `embedSubFrameFailed` | background → content | `SidebarApp.tsx` | Real network failure for a pinned-origin `sub_frame` (from `webRequest.onErrorOccurred`) |
-| `netLog` | background → content | `SidebarApp.tsx` | DEBUG: mirror webRequest observations into the tab console |
-| `togglePanel` | background → content | `SidebarApp.tsx` | Open/close active panel (reopens last-opened pin) |
-| `getState` | popup → content | `SidebarApp.tsx` | Return panel/sidebar state |
+All messages use `chrome.runtime.sendMessage` / `chrome.tabs.sendMessage` with an `action` field. Async handlers return `true` from `onMessage` and call `sendResponse` later. Content-side sends go through `browserSidebarSafeSendMessage`.
 
-All async handlers return `true` from `onMessage` and call `sendResponse` in a promise/IIFE.
+**To the background**
 
----
+| Action | From | Purpose |
+|--------|------|---------|
+| `openTab` | sidebar | Open a URL in a new tab |
+| `saveLastActivePin` | sidebar | Persist `lastActivePinId` |
+| `broadcastPinsUpdated` | sidebar, options | Push `pinsUpdated` to all tabs, then re-sync embed support |
+| `getStorageData` | options | Load pins/settings with defaults |
+| `resetStorage` | sidebar, options | Restore defaults, broadcast, re-sync embed support |
+| `getZoomFactor` | sidebar | Report the sender tab's browser zoom |
+| `ensureEmbedRules` | sidebar | Navigation gate: resolve once DNR rules + cookies are committed |
+| `repairEmbedPartition` | sidebar | Global SW + cache wipe (Layer 4) |
+| `shouldGuardScroll` | `frameScrollGuard` | Is this frame a pinned origin? |
+| `shouldManageServiceWorkers` | `frameDiagnostics` | Is this frame a pinned origin? |
+| `panelFrameBooted` | `frameDiagnostics` | Boot signal; relayed to the frame's tab |
 
-## Key modules reference
+**To the tab's sidebar** (handled in `SidebarApp`'s message effect)
 
-### `content/SidebarApp.tsx`
+| Action | Source | Purpose |
+|--------|--------|---------|
+| `pinsUpdated` | `broadcastPinsUpdated`, `resetStorage` | Replace pins/settings; drop warm frames for deleted/edited pins; close the panel if its pin is gone |
+| `setSidebarHidden` | toolbar click | Show/hide the strip |
+| `pageZoomChanged` | `tabs.onZoomChange` | Update zoom compensation |
+| `panelFrameBooted` | relay | Record the origin as booted |
+| `embedSubFrameFailed` | `webRequest.onErrorOccurred` | Network-level embed failure for the active pin |
+| `netLog` | `webRequest` trace | DEBUG: mirror network traces into the tab console |
+| `togglePanel`, `getState` | — | Handlers exist but **nothing sends these messages** (dead code) |
 
-| Concern | Purpose |
-|---------|---------|
-| `handlePinClick` | Always opens the in-page panel for the clicked pin |
-| `openPanelForPin` | Warm-frame reuse, rule gate, fresh navigation, timeout net |
-| `preloadPin` | Speculative hidden-frame mount (hover dwell / press) |
-| `verifyIframeEmbed` | Boot-signal + poll-based runtime embed detection |
-| `finalizeIframeSuccess` | Confirms pin/generation are current, then shows the iframe |
-| `handleEmbedFailure` | Auto-repair (once per open, cooldown) then fallback view |
-| `repairAndRetry` | `repairEmbedPartition` + one fresh retry |
-| `quickPinCurrentPage` | One-click add of current page tab |
-| `saveAndBroadcast` | Persist + sync all tabs |
-| Message listener | `pinsUpdated`, `setSidebarHidden`, `embedSubFrameFailed`, `panelFrameBooted`, `netLog`, … |
-
-### `content/sidebarUtils.ts`
-
-| Function | Purpose |
-|----------|---------|
-| `loadSidebarStorage()` | Initial pins/settings/hidden state |
-| `applyLayoutClasses()` | Toggle `html` margin classes |
-| `setCssVariables()` | Set `--browser-sidebar-strip-width`, `--browser-sidebar-panel-width` |
-| `setPanelWidthCss()` | Live width update during drag/slider: writes `--browser-sidebar-panel-width` imperatively (no React state) |
-| `setPageResizeActive()` | Toggle `browser-sidebar-resizing` on host page (disables the margin transition mid-gesture) |
-| `injectPageShiftStyles()` | Inject global page-shift CSS once |
-
-### `content/fixedShift.ts`
-
-| Function | Purpose |
-|----------|---------|
-| `refreshFixedElementShift()` | Full sweep (release, re-measure, re-apply) — call only on explicit state changes; routine DOM mutations are handled by the internal observer |
-| `fullSweep()` / `checkElement()` | Measure/apply the `translate` + width override on intruding fixed elements |
-| `handleRecords()` | Incremental mutation pass (added/removed/attribute records) |
-| `startObserver()` / `stopObserver()` | 250ms-debounced MutationObserver lifecycle |
-
-### `content/runtimeGuard.ts`
-
-| Function | Purpose |
-|----------|---------|
-| `browserSidebarRuntimeAlive()` | `chrome.runtime?.id` liveness check (no-throw) |
-| `browserSidebarSafeSendMessage()` | No-throw `runtime.sendMessage`; `undefined` = no answer |
-
-### `lib/embed-bypass.ts`
-
-| Function | Purpose |
-|----------|---------|
-| `browserSidebarSyncEmbedBypassRules()` | Recomputes pin hostnames and replaces the two `declarativeNetRequest` session rules — header-strip + `CORP: cross-origin` (rule 1) and `Sec-Fetch-*` spoof (rule 2) — each in its own `updateSessionRules` call |
-| `browserSidebarGetPinHostnames()` | Sorted pinned-origin list used by the rules |
-
-### `background.ts`
-
-| Function | Purpose |
-|----------|---------|
-| `broadcastToAllTabs()` | Send message to every injectable tab |
-| `isInjectableUrl()` | http/https check |
-| `browserSidebarSenderOriginIsPinned()` | Origin check for sub-frame messages (`shouldGuardScroll`, `shouldManageServiceWorkers`) |
-| `browserSidebarSyncEmbedSupport()` | Rules first (they gate navigations), cookies second; caches the sync signature |
+To add an action: handle it in `background.ts` `onMessage` (return `true` if async), send it via `browserSidebarSafeSendMessage` (or handle it in the `SidebarApp` listener), and add it to these tables and to the protocol comment above the background `onMessage` handler.
 
 ---
 
-## Concurrency and race conditions (important for debugging)
+## 10. Concurrency and race conditions
 
 | Problem | Mitigation |
 |---------|------------|
-| Multiple `handleEmbedFailure` calls | `embedFailureHandled`, one auto-repair per open + `AUTO_REPAIR_COOLDOWN_MS` |
-| Stale iframe verify timers | `iframeVerifyGeneration` incremented on each new load/close |
-| Cross-origin opaque frame mistaken for failure | Boot signal (`panelFrameBooted`) + 2000ms grace — the only reliable committed-vs-blocked discriminator |
-| Real network failure invisible to in-page checks | Background `webRequest.onErrorOccurred` → `embedSubFrameFailed` message |
-| Panel navigation racing cold-worker rule install | `ensureEmbedRules` gate before first navigation (60s content-side cache + background signature fast path) |
-| Wake-time rule re-assert losing to eager navigation | Top-level re-assert on every worker wake + navigation gate above |
-| MutationObserver resize fight with site JS | Full sweeps only on state changes; incremental handling otherwise |
-| Warm frame reused after a blocked load | Boot signals cleared per fresh navigation; failed frames evicted, never reused |
-| Warm frames reordered (DOM move = reload) | Insertion-stable array; LRU via `lastUsed` timestamps, never reordering |
-| SW-wipe storm from repeated failures | Auto-repair once per open + global 30s cooldown; manual button beyond that |
-| Extension reload orphans content scripts | `runtimeGuard.ts` no-throw wrappers; "refresh this page" notice |
+| Several failure signals for one load | `embedFailureHandledRef` (reset per open) |
+| Stale verify / watchdog timers | Verify generation bumped on open, close, and failure |
+| Cross-origin frame mistaken for failure | Boot signal + 2s grace |
+| Blocked retry inheriting a stale success | Boot signals cleared before each fresh navigation / preload |
+| Network block invisible to in-page checks | `embedSubFrameFailed` from `webRequest.onErrorOccurred` |
+| Navigation racing a cold worker's rule install | Wake-time re-assert + `ensureEmbedRules` gate |
+| SW-wipe storm from repeated failures | One auto-repair per open + 30s global cooldown |
+| Warm frame reordered (DOM move = reload) | Insertion-stable array; LRU via `lastUsed` |
+| Failed frame reused | Evicted on failure, never reused |
+| External width change fighting a live drag | `widthGestureActiveRef` gate on the `storage.onChanged` listener |
+| MutationObserver resize fight with site JS | Full sweeps only on state changes; incremental otherwise; observer disconnected during sweeps |
+| Preload timer firing after unmount | Cleared in an unmount effect |
+| Extension reload orphaning content scripts | `runtimeGuard.ts` wrappers + reload notice |
 
 ---
 
-## Platform limitations (do not try to "fix" without architectural change)
+## 11. Limitations
 
-1. **A handful of sites still can't be embedded** (mainly OAuth/sign-in flows) — they detect framing via JavaScript or server-side checks, not just response headers. These show the in-panel fallback view with "Open in new tab" / "Repair & retry".
-2. **Cannot add real sidebar to browser chrome** — extension API limit. The panel overlays the page; only the strip shifts content.
-3. **Content scripts don't run on `chrome://` pages** — toolbar toggle guarded.
-4. **`chrome.storage.sync` merge** — existing users keep old pins until reset; new default pins only apply on first install or reset.
-5. **Third-party cookie/session quirks** — the iframe is a third-party context; some sites may repeatedly ask to log in even once framing succeeds.
-6. **Partitioned service-worker caches** can poison embeds in ways header rules can't reach — handled by Layer 4, but the repair is global (all sites' SWs).
+These are inherent to the approach. Don't try to "fix" them without an architectural change.
 
----
-
-## Testing notes
-
-| Pin | Expected behavior |
-|-----|-------------------|
-| **Example** (`example.com`) | Panel opens with iframe |
-| **Twitch / Discord / X / Instagram / ChatGPT / Claude** | Panel opens and loads iframe — embed-bypass strips blocking headers. Verify via service worker console that `browserSidebarSyncEmbedBypassRules` ran. |
-| OAuth/sign-in pages (e.g. `accounts.google.com`) | Panel opens, then shows the in-panel fallback view after runtime detection — expected |
-| **X after repeated opens** | If "refused to connect": auto-repair fires once; manual **Repair & retry** heals a poisoned SW partition |
-| Click same pin (panel open) | Panel closes, pin deselected |
-| Click page outside the sidebar | Open panel closes |
-| Pin hover / press | Hidden frame preloads after 150ms; click opens warm-instant |
-| Reopen recently used pin | Instant (warm frame), no network round-trip |
-| Scroll inside an embed to its boundary | Host page does not scroll (frameScrollGuard) |
-| Fallback view "Open in new tab" | Sends `openTab` → `background.ts` → `chrome.tabs.create` opens the pin's URL |
-| **Settings → Pin current page** | Adds current tab URL/title/favicon to strip |
-| Toolbar click | Hides/shows strip; page margin resets when hidden |
-| Extension reload with tabs open | "Extension reloaded — refresh this page" notice appears; sidebar keeps rendering |
-
-Reload extension after manifest/permission changes at `chrome://extensions`.
-
-Service worker logs: click **Service worker** link on extension card. Look for `[browser-sidebar]` prefixed messages. In-page verification traces (`[browser-sidebar] Verify attempt`, embed-failure diagnostics) appear in the *tab's* console; network traces in both consoles (`[browser-sidebar:net]`).
+1. **No real browser-chrome sidebar.** The panel overlays the page; only the strip shifts content, and the viewport is not actually narrower.
+2. **JS / server-side anti-framing** (mainly OAuth sign-in like Google/Microsoft) can't be undone by header rewriting. These sites end up on the fallback view by design.
+3. **Third-party context.** Blocking third-party cookies in Chrome settings defeats the cookie relaxation. localStorage/IndexedDB stay partitioned, and some sites may keep asking to log in.
+4. **Partitioned SW caches** can poison embeds beyond header rules' reach. The repair is global (all sites' service workers), so it must stay rate-limited and user-visible.
+5. **Restricted pages.** Content scripts don't run on `chrome://`, the Web Store, etc.
+6. **Default-pin updates** reach existing installs only via **Reset to defaults**.
+7. **Fixed-element shift** doesn't reach site shadow roots or same-origin iframes. An element the site re-anchors or re-styles while managed keeps the stale override until the next state change.
 
 ---
 
-## Extending the codebase
+## 12. Debugging and testing
 
-### Add a default pin
+### Logs
 
-Edit `BROWSER_SIDEBAR_DEFAULTS.DEFAULT_PINS` in `src/lib/defaults.ts` and add icon under `icons/apps/`. Existing installs need **Reset to defaults** in settings.
+The build currently ships verbose **DEBUG** logging. Every `sub_frame` request on every page is traced, and `frameDiagnostics.ts` logs in every frame.
 
-### Add more headers to the bypass
+| Where | What |
+|-------|------|
+| Service worker console (extension card → **Service worker**) | `[browser-sidebar]` rule/cookie sync, `ensureEmbedRules`, repair; `[browser-sidebar:net]` traces |
+| Tab console | `[browser-sidebar]` verification traces and `Embed failure:` diagnostics; `[browser-sidebar:net]` mirror; `[browser-sidebar:frame <host>]` in-frame reports |
 
-Edit `HEADERS_TO_STRIP` in `src/lib/embed-bypass.ts` if a site uses another header to block framing. Keep the list conservative.
+Reload the extension at `chrome://extensions` after manifest or permission changes. Open tabs then show the reload notice until refreshed.
 
-### Debug a site that fails to embed in the panel
+### Debug a site that won't embed
 
-1. Tab console: look for `[browser-sidebar:net]` sub_frame traces — did the request fire? What headers came back (`xFrameOptions`, `cspFrameAncestors`, `fromCache`)? A `fromCache: true` response with XFO intact means a partitioned service worker → use **Repair & retry**.
-2. Service worker console: check `browserSidebarSyncEmbedBypassRules` errors and `ensureEmbedRules` responses.
-3. If headers are gone but the panel still shows the fallback view, check the `[browser-sidebar] Embed failure:` diagnostics — `SecurityError` with no boot signal within 2s means the frame never committed; the site is doing JS/server-side anti-framing, and the fallback view is the expected outcome.
-4. If the fallback view appears instantly, check `EMBED_BLOCKED_PATTERN` in `SidebarApp.tsx` isn't matching non-error page text (false positive).
+1. Check the `[browser-sidebar:net]` traces. Did the `sub_frame` request fire? Are `xFrameOptions` / `cspFrameAncestors` still present? Is the response `fromCache: true` with XFO intact? That last case is a poisoned SW partition: use **Repair & retry**.
+2. Check the `Syncing embed bypass rules for domains:` log. Is the site's final domain (after redirects, e.g. twitter.com) in the list? If not, it isn't covered by the rules.
+3. If the headers are gone but the fallback still shows, read the `Embed failure:` diagnostics. SecurityError with no boot signal within 2s means the frame never committed: the site is doing JS/server-side anti-framing, and the fallback is the expected outcome.
+4. If the fallback appears instantly on a working site, check that `EMBED_BLOCKED_PATTERN` isn't matching real page text.
 
-### Add new message action
+### Manual test checklist
 
-1. Handle in `background.ts` `onMessage` (return `true` if async).
-2. Call from `SidebarApp.tsx` via `browserSidebarSafeSendMessage` (or listen in the content script message handler).
-3. Document in this file's message protocol table.
+| Scenario | Expected |
+|----------|----------|
+| Click a default pin (X, Instagram, Discord, ChatGPT, Claude, …) | Panel loads the site in the iframe |
+| OAuth page as a pin (e.g. `accounts.google.com`) | Fallback view after detection |
+| X after repeated opens | If "refused to connect": one auto-repair; manual **Repair & retry** heals |
+| Click the same pin again | Panel closes, highlight clears |
+| Click the page outside the sidebar / switch tabs | Panel closes |
+| Hover a pin 150ms, then click | Opens warm-instant |
+| Reopen a recently used pin | Instant, no reload |
+| Scroll an embed past its end | Host page doesn't scroll |
+| Drag the resize handle / move the slider | Smooth; the embed reflows once on release; other tabs pick up the width |
+| Ctrl +/- on the page | Sidebar keeps its physical size |
+| Settings → Pin current page | Current tab added with title + favicon |
+| Close settings with a half-filled form | Form is empty on reopen |
+| Toolbar click | Strip hides/shows on all tabs; margin resets |
+| Reload the extension with tabs open | "Extension reloaded — refresh this page" notice |
+
+### E2E scripts
+
+`tests/e2e/` holds Playwright scripts that launch Chromium with `dist/` loaded and drive local pages (`test.html`, `scroll.html`):
+
+| Script | Covers |
+|--------|--------|
+| `verify-run.cjs` / `verify.js` | Page shift and fixed/absolute element shift |
+| `scrolltest-run.cjs` / `scrolltest.js` | Scroll isolation |
+| `dragtest.cjs` | Strip drag-to-reorder |
+| `zoomtest.cjs` | Zoom compensation |
+| `yt-diagnostic.cjs` | YouTube layout with the sidebar |
+| `probe.js` | Ad-hoc probe |
+
+They are **not wired into `package.json`**. They need `playwright-core` installed separately, and they hardcode a macOS `DIST` path that must be edited before running elsewhere. The `.js` / `-run.cjs` pairs are duplicates.
 
 ---
 
-## Related docs
+## 13. Extending the codebase
 
-- `README.md` — user-facing install/usage
-- `docs/INSTALL.md`, `docs/RELEASE.md` — install and release procedures
-- `src/popup/` — full-page options UI; inline settings (`SettingsPanel`) is the primary in-page UX
+- **Add a default pin:** append to `BROWSER_SIDEBAR_DEFAULTS.DEFAULT_PINS` (`src/lib/defaults.ts`) and add an SVG under `icons/apps/`. Existing installs need **Reset to defaults**.
+- **Strip another framing header:** add it to `HEADERS_TO_STRIP` in `src/lib/embed-bypass.ts`. Keep the list conservative.
+- **Add a message action:** see the end of [§9](#9-message-protocol).
+- **Change layout sizes:** use the `BROWSER_SIDEBAR_DEFAULTS` constants (both width sliders already read `PANEL_MIN_WIDTH` / `PANEL_MAX_WIDTH`). `page-shift.module.scss` has fallback values for the CSS variables.
+- **Touch the sidebar from page-side code:** go through `sidebarUtils.ts`, and call `refreshFixedElementShift()` after any change that affects the page shift.
 
 ---
 
-*Last updated to reflect: overlay-mode panel (page shift is strip-width only), warm-frame architecture (4-frame LRU + hover preload), fixed-element shift (`fixedShift.ts`), sub-frame scroll isolation (`frameScrollGuard.ts`), boot-signal verification + partitioned-SW defense and repair (`frameDiagnostics.ts`, `repairEmbedPartition`), runtime-context guard (`runtimeGuard.ts`), sandboxed panel iframes, `webRequest`/`browsingData` permissions, and the `ensureEmbedRules` gating with signature/TTL fast paths.*
+## 14. Related docs
+
+- `README.md`: user-facing features, install, usage, troubleshooting
+- `docs/INSTALL.md`: install procedure
+- `docs/RELEASE.md`: release procedure
+- `docs/GITHUB-RULES.md`: repository access rules (who can push to `main`, approve PRs, publish release tags)

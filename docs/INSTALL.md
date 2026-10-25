@@ -17,6 +17,9 @@ Download a pre-built ZIP from [GitHub Releases](https://github.com/bryanChatsiri
 1. Download the newer ZIP from Releases.
 2. Extract it to a new folder (or replace the old folder).
 3. Go to `chrome://extensions` and click the **Reload** button on browser-sidebar, or remove the old install and **Load unpacked** again from the new folder.
+4. Refresh any tabs that were already open. Until you do, they show "Extension reloaded — refresh this page".
+
+Your pins and settings are kept across updates. New default pins added in a release only appear after **Settings → Reset to defaults**, which replaces your current pins.
 
 ## Troubleshooting
 

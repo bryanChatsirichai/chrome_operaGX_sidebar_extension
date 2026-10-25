@@ -3,96 +3,89 @@
 [![Release](https://img.shields.io/github/v/release/bryanChatsirichai/chrome_operaGX_sidebar_extension?label=download)](https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 
-A Chrome extension that adds a native-browser-style sidebar to any website: a vertical icon strip on the left edge of the page with an expandable panel for your pinned web apps — Discord, Messenger, ChatGPT, or any site you choose.
+A Chrome extension that adds an Opera GX–style sidebar to any website: a slim icon strip on the left edge of the page, with a panel that opens your pinned web apps — Messenger, Discord, ChatGPT, or any site you choose — right beside what you're browsing.
 
 ## Features
 
-- **Sidebar on every page** — a 48px icon strip on the left edge of every `http(s)` page; hide it any time from the toolbar icon
-- **Expandable panel (300–1000px)** for pinned sites — overlays the page, like a native browser sidebar
-- **Blocked sites just work** — sites that normally refuse to be embedded in iframes (Twitch, X, Instagram, ChatGPT, Claude, Messenger, …) load directly in the panel; see [Why some sites normally fail](#why-some-sites-normally-fail)
-- **Instant switching** — recently used panels stay alive in the background and hovering a pin preloads it, so switching apps is instant
-- **Smooth resizing** — drag the panel edge or use the settings slider; heavy sites never jank during the gesture
-- **Smart page shifting** — normal content *and* fixed elements (sticky bars, floating buttons) shift right of the strip, so nothing hides underneath it
-- **Scroll isolation** — scrolling inside an embedded app never chain-scrolls the page underneath
-- **Pin any page** — one click adds the current site with its title and favicon; edit, reorder, and delete pins in settings
-- **Synced settings** — pins and preferences follow you across devices
-- Dark theme, 7 default apps included
+- **Sidebar on every page.** Hide or show it any time from the toolbar icon.
+- **Sites that usually block embedding still load.** X, Instagram, Messenger, ChatGPT, Claude and others open directly in the panel, signed in with your normal browser session.
+- **Instant switching.** Recently used apps stay loaded in the background, and hovering an icon preloads it.
+- **Resizable panel.** Drag its edge or use the slider in settings; the width syncs across tabs.
+- **Plays nicely with pages.** Page content and sticky bars move clear of the strip, and scrolling inside an app never scrolls the page underneath.
+- **Pin any page in one click.** Edit, reorder and delete pins from settings.
+- **Synced.** Pins and preferences follow your Chrome profile across devices.
+- Dark theme, with 7 default apps included.
 
 ## Install
 
-### From a release (no build required)
+1. Download the latest **browser-sidebar-vX.Y.Z.zip** from [Releases](https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases/latest) and extract it.
+2. Go to `chrome://extensions` and turn on **Developer mode**.
+3. Click **Load unpacked** and select the extracted folder (the one containing `manifest.json`).
+4. Visit any website. The icon strip appears on the left.
 
-1. Download **browser-sidebar-v*.zip** from [GitHub Releases](https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases/latest)
-2. Extract the ZIP (e.g. to `Downloads\browser-sidebar`)
-3. Open Chrome and go to `chrome://extensions`
-4. Enable **Developer mode** (top right)
-5. Click **Load unpacked** and select the extracted folder (the one containing `manifest.json`)
-6. Visit any website — the icon strip appears on the left
-
-> **Updating an existing install:** after replacing the folder and reloading the extension, new default pins and embed improvements apply after **Settings → Reset to defaults**.
-
-### From source
-
-Requires **Node.js 20+**.
-
-```bash
-npm install
-npm run build
-```
-
-Then **Load unpacked** from the `dist/` folder at `chrome://extensions`.
+For updating to a new version and fixing install problems, see [docs/INSTALL.md](docs/INSTALL.md). To build from source instead, see [Development](#development).
 
 ## Usage
 
-| Action | How |
-|--------|-----|
+| To… | Do this |
+|-----|---------|
 | Open a pinned app | Click its icon in the strip |
-| Switch between recently used apps | Click their icons — warm panels reopen instantly |
-| Close the panel | Click the same icon again, the ✕ in the panel header, or anywhere on the page |
-| Hide / show the sidebar | Click the extension's toolbar icon |
+| Close the panel | Click the same icon again, the ✕, or anywhere on the page |
 | Refresh an app | Click the refresh button in the panel header |
-| Resize the panel | Drag the handle on its right edge, or use the width slider in settings |
-| Open settings | Click the gear icon at the bottom of the strip |
-| Pin the current website | Settings → **Pin current page** (or **+ Add website** to pre-fill the form) |
-| Edit, reorder, or delete pins | Settings — drag to reorder |
+| Resize the panel | Drag its right edge, or use the width slider in settings |
+| Hide / show the sidebar | Click the extension's toolbar icon |
+| Open settings | Click the gear at the bottom of the strip |
+| Pin the current website | Settings → **Pin current page** (or **+ Add website** to edit first) |
+| Edit, reorder, or delete pins | Settings: drag to reorder, or use ✎ / ✕ |
+| Restore the default pins | Settings → **Reset to defaults** |
+
+Settings are also available on a full-page options page: right-click the toolbar icon → **Options**.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
-| A site shows "This site could not load in the panel" | The panel tried and the site refused to be embedded at the app level. Use **Open in new tab**, or **Repair & retry** if cached service-worker state is the culprit. |
-| A pinned site suddenly shows "refused to connect" | Use **Repair & retry** in the fallback view — this clears the cached state that's blocking the embed. |
-| The extension isn't on a page | Content scripts can't run on `chrome://` pages or the Web Store. |
-| Panel asks me to sign in repeatedly | The embed uses your normal browser session; make sure third-party cookies aren't blocked in Chrome settings. |
-| Something looks off after updating the extension | Reload the extension at `chrome://extensions`, then refresh open tabs. |
+| "This site could not load in the panel" | The site refuses to be embedded. Use **Open in new tab**, or try **Repair & retry**. |
+| A pinned site shows "refused to connect" | Click **Repair & retry**. It clears the cached site data that blocks the panel. Note: this clears cached data for *all* sites, not just this one. |
+| The panel keeps asking me to sign in | Make sure third-party cookies aren't blocked in Chrome's settings. |
+| No sidebar on a page | Chrome doesn't allow extensions on `chrome://` pages or the Chrome Web Store. |
+| "Extension reloaded — refresh this page" | Refresh the tab. This happens after the extension is updated or reloaded. |
+| New default pins don't appear after updating | Defaults apply only to new installs. Use **Settings → Reset to defaults** (this replaces your pins). |
 
-## Why some sites normally fail
+## How it works
 
-Browsers with native sidebars render apps in a real tab, where nothing can block them. An extension can't do that, so browser-sidebar embeds sites in an iframe — a context many sites actively block with response headers, cookie rules, and framing checks. The extension works around all of those layers automatically, which is why sites like Twitch, X, and Messenger load in the panel even though they normally refuse iframes everywhere else.
+Browsers with built-in sidebars show apps in a real browser tab. Extensions can't do that, so browser-sidebar shows each app in an embedded frame. Many sites deliberately block that, and the extension undoes those blocks only for the sites you've pinned. The few sites it can't handle (mostly Google or Microsoft sign-in pages) show an **Open in new tab** button instead.
 
-The rare exceptions are sites that detect framing from inside their own JavaScript (mainly OAuth/sign-in pages like Google or Microsoft accounts) — those can't be spoofed and fall back to the in-panel message with an **Open in new tab** button.
-
-For the full technical breakdown — the five-layer embed bypass, verification pipeline, and debugging — see [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
+The full technical design is in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
 
 ## Limitations
 
-- **In-page overlay, not browser chrome.** Chrome extensions cannot dock a real panel beside the page; this overlays the page viewport and shifts content with CSS.
-- **A few sites still can't embed** (mainly OAuth/sign-in flows) — they get the in-panel fallback view.
-- **Chrome only**, Chrome 114+ (Manifest V3).
-- **Aggressive page layouts** may not shift cleanly when the panel opens.
+- **It's an overlay, not part of Chrome itself.** The panel floats over the page instead of shrinking it.
+- **A few sites can't be embedded**, mostly sign-in pages. They offer **Open in new tab**.
+- **Chrome only.** The extension isn't published on the Chrome Web Store, so you install it with Developer mode.
+- **Unusual page layouts** may not shift perfectly around the strip.
+
+The full list of technical limits is in [docs/IMPLEMENTATION.md § Limitations](docs/IMPLEMENTATION.md#11-limitations).
 
 ## Development
 
+Requires **Node.js 20+**.
+
 ```bash
 npm install
-npm run dev       # watch build
-npm run build     # production build to dist/
+npm run dev        # rebuild on change
+npm run build      # production build to dist/
 npm run typecheck
 ```
 
-After editing source files, reload the extension at `chrome://extensions` (load unpacked from `dist/`).
+Load `dist/` with **Load unpacked** at `chrome://extensions`, and click **Reload** on the extension card after each rebuild.
 
-Architecture, the embed-bypass pipeline, message protocol, and debugging guides live in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md). Release procedure lives in [docs/RELEASE.md](docs/RELEASE.md).
+| Doc | Contents |
+|-----|----------|
+| [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) | Architecture, source layout, embed pipeline, message protocol, debugging and testing |
+| [docs/RELEASE.md](docs/RELEASE.md) | Publishing a release (version bump, tag, CI build) |
+| [docs/GITHUB-RULES.md](docs/GITHUB-RULES.md) | Repository access rules for `main` and release tags |
+| [docs/INSTALL.md](docs/INSTALL.md) | End-user install and update steps |
 
 ## License
 
