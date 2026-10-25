@@ -5,6 +5,7 @@ import {
   attachHostKeyboardBubbleStop,
   registerDocumentKeyboardIsolation
 } from './keyboardIsolation';
+import { browserSidebarSafeSendMessage } from './runtimeGuard';
 import {
   injectPageShiftStyles,
   loadSidebarStorage
@@ -27,9 +28,17 @@ void (async function initBrowserSidebar(): Promise<void> {
     return;
   }
 
-  injectPageShiftStyles();
+  // Popup windows (sign-in dialogs etc.) get no sidebar. No answer (dead
+  // context / worker error) falls back to mounting, the previous behavior.
+  const [mountCheck, storage] = await Promise.all([
+    browserSidebarSafeSendMessage<{ ok: boolean }>({ action: 'shouldMountSidebar' }),
+    loadSidebarStorage()
+  ]);
+  if (mountCheck?.ok === false || document.getElementById('browser-sidebar-host')) {
+    return;
+  }
 
-  const storage = await loadSidebarStorage();
+  injectPageShiftStyles();
 
   hostEl = document.createElement('div');
   hostEl.id = 'browser-sidebar-host';

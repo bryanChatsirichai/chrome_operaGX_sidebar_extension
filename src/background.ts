@@ -284,6 +284,7 @@ chrome.tabs.onZoomChange.addListener((change) => {
  * that answer asynchronously return true to keep `sendResponse` alive.
  *
  *   openTab                     open a URL in a new tab
+ *   shouldMountSidebar          is the sender tab in a normal window (not a popup)?
  *   saveLastActivePin           persist the last clicked pin id
  *   broadcastPinsUpdated        fan out pins/settings to all tabs, re-sync embed support
  *   getZoomFactor               report the sender tab's browser zoom
@@ -318,6 +319,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     })
       .then(() => browserSidebarSyncEmbedSupport(nextPins))
       .then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (message.action === 'shouldMountSidebar') {
+    // Only normal browser windows get the sidebar — not window.open() popups
+    // (OAuth / "Sign in with Google" dialogs), app or devtools windows.
+    // Content scripts can't see the window type, so the background checks it.
+    const windowId = sender.tab?.windowId;
+    if (typeof windowId !== 'number') {
+      sendResponse({ ok: false });
+      return false;
+    }
+    void chrome.windows
+      .get(windowId)
+      .then((win) => sendResponse({ ok: win.type === 'normal' }))
+      .catch(() => sendResponse({ ok: true }));
     return true;
   }
 
