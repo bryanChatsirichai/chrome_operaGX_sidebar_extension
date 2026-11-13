@@ -1,0 +1,56 @@
+# ============================================================================
+# Agentic PR Reviewer — CALLER WORKFLOW TEMPLATE
+# ============================================================================
+# Copy to <target-repo>/.github/workflows/pr-review.yml.
+# Setup guide: https://github.com/bryanChatsirichai/github_agentic_pr_reviewer/blob/main/docs/multi-repo-integration.md
+#
+#   Repo owner: use as-is.
+#   Fork users: change the `uses:` owner below to your fork.
+#
+# The PR that adds this file triggers its own review — `pull_request` runs
+# the workflow file from the PR, so it need not be on the default branch.
+# ============================================================================
+
+name: pr-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  # LLM smoke test (no PR). The "Run workflow" button appears only once this
+  # file is on the default branch.
+  workflow_dispatch:
+
+# One in-flight review per PR; newer cancels older.
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip fork PRs. Not a security boundary (a fork PR can edit this file);
+    # fork runs already get no secrets and a read-only token. This just avoids
+    # a failing run on every outside PR.
+    # Optional: append `&& github.base_ref == 'main'` to review only PRs into main.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+
+    # A called workflow can never exceed the caller job's permissions.
+    permissions:
+      contents: read
+      pull-requests: write
+
+    # Called workflows can't read this repo's secrets unless passed. Only the
+    # key matching model_provider needs to exist. Avoid `secrets: inherit`:
+    # it would hand every repo secret to the reviewer.
+    secrets:
+      # GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    # Fork users: replace the owner in this path with your GitHub user name.
+    uses: bryanChatsirichai/github_agentic_pr_reviewer/.github/workflows/pr-review-reusable.yml@main
+    with:
+      model_provider: google   # google | openai | claude
+      # Optional overrides from repo *variables*; unset → provider default.
+      # google_model: ${{ vars.GOOGLE_MODEL }}
+      openai_model: ${{ vars.OPENAI_MODEL }}
+      # claude_model: ${{ vars.CLAUDE_MODEL }}
