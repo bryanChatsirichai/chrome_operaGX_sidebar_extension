@@ -50,8 +50,8 @@ jobs:
     # Fetches the reusable workflow YAML from the reviewer repo and runs it
     # here, in this repo's context (this repo's token, PR event and Actions
     # minutes). Nothing runs in the reviewer repo. That workflow then checks out
-    # the reviewer's Python code at `main`, so @main means both the YAML and the
-    # code that receives the API keys follow that branch.
+    # the reviewer's Python code at a hardcoded `main`, so the @ref below pins
+    # only the YAML; the code that receives the API keys always tracks `main`.
     uses: bryanChatsirichai/github_agentic_pr_reviewer/.github/workflows/pr-review-reusable.yml@main
     # All values come from this repo's Actions *variables*, so switching
     # provider or model never needs an edit here. MODEL_PROVIDER is required
