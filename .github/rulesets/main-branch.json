@@ -1,5 +1,5 @@
 {
-  "name": "main — PR + owner approval required, owner bypass",
+  "name": "main — owner only (push, merge, force-push, delete)",
   "target": "branch",
   "enforcement": "active",
   "conditions": {
@@ -16,7 +16,16 @@
         "require_last_push_approval": false,
         "dismiss_stale_reviews_on_push": true,
         "required_approving_review_count": 1,
-        "required_review_thread_resolution": false
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "required_reviewers": [],
+        "allowed_merge_methods": ["merge", "squash", "rebase"]
+      }
+    },
+    {
+      "type": "update",
+      "parameters": {
+        "update_allows_fetch_and_merge": false
       }
     },
     {
@@ -30,11 +39,6 @@
     {
       "actor_type": "User",
       "actor_id": 89973472,
-      "bypass_mode": "always"
-    },
-    {
-      "actor_type": "RepositoryRole",
-      "actor_id": 5,
       "bypass_mode": "always"
     }
   ]
