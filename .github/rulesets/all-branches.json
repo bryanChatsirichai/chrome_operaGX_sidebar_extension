@@ -1,0 +1,32 @@
+{
+  "name": "All branches — owner only (create, push, delete)",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["~ALL"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "creation"
+    },
+    {
+      "type": "update",
+      "parameters": {
+        "update_allows_fetch_and_merge": false
+      }
+    },
+    {
+      "type": "deletion"
+    }
+  ],
+  "bypass_actors": [
+    {
+      "actor_type": "User",
+      "actor_id": 89973472,
+      "bypass_mode": "always"
+    }
+  ]
+}
