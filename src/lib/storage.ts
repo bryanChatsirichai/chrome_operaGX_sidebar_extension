@@ -1,4 +1,5 @@
 import { browserSidebarGetDefaultStorageData } from './defaults';
+import { resolveThemeId } from './themes';
 import type { Pin, Settings, StorageData } from './types';
 
 /** Reads pins, settings, and UI state from sync storage with defaults applied. */
@@ -6,9 +7,11 @@ export async function browserSidebarGetStorageData(): Promise<StorageData> {
   const defaults = browserSidebarGetDefaultStorageData();
   const stored = await chrome.storage.sync.get(['pins', 'settings', 'lastActivePinId', 'sidebarHidden']);
 
+  const settings = { ...defaults.settings, ...(stored.settings ?? {}) };
+
   return {
     pins: stored.pins ?? defaults.pins,
-    settings: { ...defaults.settings, ...(stored.settings ?? {}) },
+    settings: { ...settings, theme: resolveThemeId(settings.theme) },
     lastActivePinId: stored.lastActivePinId ?? defaults.lastActivePinId,
     sidebarHidden: stored.sidebarHidden ?? defaults.sidebarHidden
   };

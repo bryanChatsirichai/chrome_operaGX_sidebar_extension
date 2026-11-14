@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { BROWSER_SIDEBAR_DEFAULTS } from '../../lib/defaults';
 import { getCurrentPagePinDefaults, resolveIconUrl } from '../../lib/pin-utils';
+import { THEME_PRESETS, type ThemeId } from '../../lib/themes';
 import type { Pin, PinFormState } from '../../lib/types';
 
 interface SettingsPanelProps {
   open: boolean;
   pins: Pin[];
   panelWidth: number;
+  theme: ThemeId;
   editingPinId: string | null;
   pinForm: PinFormState;
   onClose: () => void;
@@ -24,6 +26,8 @@ interface SettingsPanelProps {
   onPanelWidthChange: (width: number) => void;
   /** Fired once when the slider gesture ends (state + storage commit). */
   onPanelWidthCommit: (width: number) => void;
+  /** Applies and persists an appearance preset (all tabs follow). */
+  onThemeChange: (theme: ThemeId) => void;
   onReset: () => void;
 }
 
@@ -35,6 +39,7 @@ export function SettingsPanel({
   open,
   pins,
   panelWidth,
+  theme,
   editingPinId,
   pinForm,
   onClose,
@@ -50,6 +55,7 @@ export function SettingsPanel({
   onDropPin,
   onPanelWidthChange,
   onPanelWidthCommit,
+  onThemeChange,
   onReset
 }: SettingsPanelProps) {
   const addFormRef = useRef<HTMLDivElement>(null);
@@ -81,6 +87,29 @@ export function SettingsPanel({
       </header>
 
       <div className="settings-body">
+        <div className="settings-section">
+          <h3 className="settings-heading">Appearance</h3>
+          <div className="settings-theme-grid" role="radiogroup" aria-label="Theme">
+            {THEME_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                role="radio"
+                aria-checked={preset.id === theme}
+                data-theme={preset.id}
+                className={`settings-theme-card${preset.id === theme ? ' selected' : ''}`}
+                onClick={() => onThemeChange(preset.id)}
+              >
+                <span className="settings-theme-swatch" aria-hidden="true">
+                  <span className="settings-theme-swatch-strip" />
+                  <span className="settings-theme-swatch-accent" />
+                </span>
+                <span className="settings-theme-name">{preset.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="settings-section">
           <div className="settings-section-header">
             <h3 className="settings-heading">Pinned websites</h3>

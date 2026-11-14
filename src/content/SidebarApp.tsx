@@ -8,7 +8,8 @@ import {
   reindexPins
 } from '../lib/pin-utils';
 import { browserSidebarRuntimeAlive, browserSidebarSafeSendMessage } from './runtimeGuard';
-import type { Pin, PinFormState, Settings } from '../lib/types';
+import { FRAME_AUDIO_MESSAGE_TYPE, type Pin, type PinFormState, type Settings } from '../lib/types';
+import { resolveThemeId, type ThemeId } from '../lib/themes';
 import { IconStrip } from './components/IconStrip';
 import { AppPanel } from './components/AppPanel';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -103,6 +104,11 @@ export interface WarmFrameEntry {
   lastUsed: number;
 }
 
+/** Identifies one mounted document: a new src or nav remounts the iframe. */
+export function warmFrameKey(entry: Pick<WarmFrameEntry, 'pinId' | 'src' | 'nav'>): string {
+  return `${entry.pinId}:${entry.src}:${entry.nav}`;
+}
+
 /**
  * How many panel iframes stay mounted (hidden) for instant pin switching.
  * Each warm cross-origin frame is a live renderer process, so this is
@@ -177,6 +183,8 @@ export function SidebarApp({
   const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
   const [panelView, setPanelView] = useState<PanelView>('idle');
   const [warmFrames, setWarmFrames] = useState<WarmFrameEntry[]>([]);
+  /** Keys (warmFrameKey) of mounted frame documents currently producing sound. */
+  const [audibleFrameKeys, setAudibleFrameKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [fallbackPin, setFallbackPin] = useState<Pin | null>(null);
   const [repairInProgress, setRepairInProgress] = useState(false);
   // True once this content script's extension context was invalidated
@@ -222,6 +230,10 @@ export function SidebarApp({
   // cross-origin frames — cleared for a pin's origin right before a fresh
   // navigation so a blocked retry can't inherit a stale success signal.
   const bootedOriginsRef = useRef<Set<string>>(new Set());
+  // frameId -> origin of the pinned page that booted in it. A frameId stays
+  // the same when the frame navigates elsewhere, so a later block on another
+  // host can be traced back to the panel frame (and pin) it happened in.
+  const panelFrameOriginsRef = useRef<Map<number, string>>(new Map());
   // Last successful DNR embed-rules assert: signature + timestamp of the
   // pinned-url set it was asserted for. Lets ensureEmbedRulesReady skip the
   // background roundtrip within EMBED_RULES_CACHE_TTL_MS (rules persist for
@@ -458,6 +470,15 @@ export function SidebarApp({
     [pins, saveAndBroadcast, settings]
   );
 
+  /** Applies an appearance preset here, then persists and syncs it to every tab. */
+  const changeTheme = useCallback(
+    (theme: ThemeId) => {
+      setSettings((prev) => ({ ...prev, theme }));
+      void saveAndBroadcast(pins, { ...settings, theme }, panelWidth);
+    },
+    [panelWidth, pins, saveAndBroadcast, settings]
+  );
+
   // ---------------------------------------------------------------------
   // Embed verification + failure handling
   // ---------------------------------------------------------------------
@@ -531,6 +552,28 @@ export function SidebarApp({
       showFallbackUI(pin);
     },
     [clearIframeTimer, clearIframeVerifyTimer, clearIframeWatchdog, collectIframeDiagnostics, evictWarmFrame, showFallbackUI]
+  );
+
+  /**
+   * The active pin's frame navigated off the pinned site to a page that
+   * refused the frame (typically a sign-in page: framing headers, or an
+   * error page such as Google's 403). Unlike handleEmbedFailure there is no
+   * auto-repair: the pinned site itself embeds fine, so a service-worker
+   * wipe would not help.
+   */
+  const handleOffSiteBlocked = useCallback(
+    (pin: Pin, url: string) => {
+      console.warn('[browser-sidebar] Panel frame left the pinned site and was blocked:', {
+        pin: pin.name,
+        url
+      });
+      embedFailureHandledRef.current = true;
+      iframeVerifyGenerationRef.current += 1;
+      evictWarmFrame(pin.id);
+      clearIframeVerifyTimer();
+      showFallbackUI(pin);
+    },
+    [clearIframeVerifyTimer, evictWarmFrame, showFallbackUI]
   );
 
   /**
@@ -1573,6 +1616,20 @@ export function SidebarApp({
             affectedPin,
             `background net failure: ${message.error} (${message.url})`
           );
+        } else if (!affectedPin && typeof message.frameId === 'number') {
+          // Blocked on a non-pinned host: only ours if this frameId earlier
+          // booted the active pin's page (see panelFrameOriginsRef).
+          const activePin = pinsRef.current.find((pin) => pin.id === activePinIdRef.current);
+          const frameOrigin = panelFrameOriginsRef.current.get(message.frameId);
+          if (
+            activePin &&
+            frameOrigin !== undefined &&
+            frameOrigin === getUrlOrigin(activePin.url) &&
+            panelOpenRef.current &&
+            !embedFailureHandledRef.current
+          ) {
+            handleOffSiteBlocked(activePin, message.url);
+          }
         }
       }
 
@@ -1582,6 +1639,9 @@ export function SidebarApp({
         const origin = getUrlOrigin(message.url);
         if (origin) {
           bootedOriginsRef.current.add(origin);
+          if (typeof message.frameId === 'number') {
+            panelFrameOriginsRef.current.set(message.frameId, origin);
+          }
           console.log('[browser-sidebar] Frame booted (scripts running):', origin);
         }
       }
@@ -1664,13 +1724,73 @@ export function SidebarApp({
 
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [closePanel, openPanelForPin, panelWidth, sidebarHidden, updateWarmFrames]);
+  }, [closePanel, handleOffSiteBlocked, openPanelForPin, panelWidth, sidebarHidden, updateWarmFrames]);
 
   // Keep the single iframeRef pointed at the ACTIVE pin's frame element —
   // verification, diagnostics, and the resize lock all use it.
   useEffect(() => {
     iframeRef.current = frameElementsRef.current.get(activePinId ?? '') ?? null;
   }, [activePinId, warmFrames]);
+
+  // Audio reports from panel frames (frameAudio.ts). The sender is matched by
+  // window identity, not origin, so a message from the host page or from an
+  // unrelated iframe never maps to a pin. Reports are keyed by the frame's
+  // document key, so a frame that unmounts or remounts drops its badge even
+  // though it never got to send "stopped".
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const data: unknown = event.data;
+      if (
+        typeof data !== 'object' ||
+        data === null ||
+        (data as { type?: unknown }).type !== FRAME_AUDIO_MESSAGE_TYPE ||
+        typeof (data as { audible?: unknown }).audible !== 'boolean'
+      ) {
+        return;
+      }
+      const audible = (data as { audible: boolean }).audible;
+
+      let pinId: string | null = null;
+      for (const [id, element] of frameElementsRef.current) {
+        if (element.contentWindow === event.source) {
+          pinId = id;
+          break;
+        }
+      }
+      const entry = pinId === null ? undefined : warmFramesRef.current.find((f) => f.pinId === pinId);
+      if (!entry) {
+        return;
+      }
+
+      const key = warmFrameKey(entry);
+      setAudibleFrameKeys((prev) => {
+        if (prev.has(key) === audible) {
+          return prev;
+        }
+        const next = new Set(prev);
+        if (audible) {
+          next.add(key);
+        } else {
+          next.delete(key);
+        }
+        return next;
+      });
+    };
+
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  useEffect(() => {
+    setAudibleFrameKeys((prev) => {
+      if (prev.size === 0) {
+        return prev;
+      }
+      const mounted = new Set(warmFrames.map(warmFrameKey));
+      const next = new Set([...prev].filter((key) => mounted.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [warmFrames]);
 
   // Watch for extension-context invalidation (extension reloaded/updated
   // while this tab stayed open). Guarded calls already no-op, but the user
@@ -1693,10 +1813,14 @@ export function SidebarApp({
   }, [clearPreloadHoverTimer]);
 
   const activePin = getActivePin();
+  const audiblePinIds = new Set(
+    warmFrames.filter((f) => audibleFrameKeys.has(warmFrameKey(f))).map((f) => f.pinId)
+  );
 
   return (
     <div
       ref={rootRef}
+      data-theme={resolveThemeId(settings.theme)}
       className={`sidebar-root${sidebarHidden ? ' hidden' : ''}${resizeDragging || sliderResizing ? ' resizing' : ''}`}
     >
       {runtimeDead && (
@@ -1708,6 +1832,7 @@ export function SidebarApp({
       <IconStrip
         pins={pins}
         activePinId={activePinId}
+        audiblePinIds={audiblePinIds}
         settingsOpen={settingsOpen}
         onPinClick={handlePinClick}
         onToggleSettings={toggleSettings}
@@ -1742,9 +1867,15 @@ export function SidebarApp({
           evictWarmFrame(activePin.id);
           void openPanelForPin(activePin);
         }}
-        onOpenInTab={() =>
-          activePin && void browserSidebarSafeSendMessage({ action: 'openTab', url: activePin.url })
-        }
+        onOpenInTab={() => {
+          const pin = fallbackPin ?? activePin;
+          if (!pin) {
+            return;
+          }
+          void browserSidebarSafeSendMessage({ action: 'openTab', url: pin.url });
+          // The user continues in the new tab; the panel's job is done.
+          closePanel();
+        }}
         onIframeLoad={handleIframeLoad}
         onIframeError={handleIframeError}
         onResizeStart={handleResizeStart}
@@ -1756,6 +1887,7 @@ export function SidebarApp({
         open={settingsOpen}
         pins={pins}
         panelWidth={panelWidth}
+        theme={resolveThemeId(settings.theme)}
         editingPinId={editingPinId}
         pinForm={pinForm}
         onClose={() => setSettingsOpen(false)}
@@ -1805,6 +1937,7 @@ export function SidebarApp({
           setPageResizeActive(false);
           commitPanelWidth(width);
         }}
+        onThemeChange={changeTheme}
         onReset={() => void handleReset()}
       />
     </div>

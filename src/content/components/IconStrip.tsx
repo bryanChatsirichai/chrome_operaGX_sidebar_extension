@@ -5,6 +5,9 @@ import { resolveIconUrl } from '../../lib/pin-utils';
 interface IconStripProps {
   pins: Pin[];
   activePinId: string | null;
+  /** Pins whose mounted frame is producing sound. The active pin is never
+   *  badged: the user is already looking at it. */
+  audiblePinIds: ReadonlySet<string>;
   settingsOpen: boolean;
   onPinClick: (pin: Pin) => void;
   onToggleSettings: () => void;
@@ -23,6 +26,7 @@ interface IconStripProps {
 export function IconStrip({
   pins,
   activePinId,
+  audiblePinIds,
   settingsOpen,
   onPinClick,
   onToggleSettings,
@@ -52,57 +56,68 @@ export function IconStrip({
 
   return (
     <aside className="icon-strip" part="icon-strip">
-      {pins.map((pin, index) => (
-        <button
-          key={pin.id}
-          className={`pin-button${activePinId === pin.id ? ' active' : ''}${dragIndex === index ? ' dragging' : ''}${dropIndex === index ? ' drop-target' : ''}`}
-          type="button"
-          title={pin.name}
-          data-pin-id={pin.id}
-          draggable
-          onClick={() => {
-            if (!dragging) {
-              onPinClick(pin);
-            }
-          }}
-          onPointerEnter={() => {
-            if (!dragging) {
-              onPinHover?.(pin);
-            }
-          }}
-          onPointerLeave={() => {
-            if (!dragging) {
-              onPinLeave?.();
-            }
-          }}
-          onPointerDown={() => {
-            if (!dragging) {
-              onPinPress?.(pin);
-            }
-          }}
-          onDragStart={() => {
-            setDragging(true);
-            setDragIndex(index);
-            onPinDragStart?.(index);
-          }}
-          onDragEnd={handleDragEnd}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDropIndex(index === dragIndex ? null : index);
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            clearDragState();
-            onPinDropPin?.(index);
-          }}
-        >
-          {pin.iconUrl ? (
-            <img src={resolveIconUrl(pin.iconUrl)} alt={pin.name} />
-          ) : (
-            <span className="pin-fallback">{pin.name.charAt(0).toUpperCase()}</span>
-          )}
-        </button>
-      ))}
+      {pins.map((pin, index) => {
+        const showAudioBadge = activePinId !== pin.id && audiblePinIds.has(pin.id);
+        return (
+          <button
+            key={pin.id}
+            className={`pin-button${activePinId === pin.id ? ' active' : ''}${dragIndex === index ? ' dragging' : ''}${dropIndex === index ? ' drop-target' : ''}`}
+            type="button"
+            title={showAudioBadge ? `${pin.name} (playing audio)` : pin.name}
+            data-pin-id={pin.id}
+            draggable
+            onClick={() => {
+              if (!dragging) {
+                onPinClick(pin);
+              }
+            }}
+            onPointerEnter={() => {
+              if (!dragging) {
+                onPinHover?.(pin);
+              }
+            }}
+            onPointerLeave={() => {
+              if (!dragging) {
+                onPinLeave?.();
+              }
+            }}
+            onPointerDown={() => {
+              if (!dragging) {
+                onPinPress?.(pin);
+              }
+            }}
+            onDragStart={() => {
+              setDragging(true);
+              setDragIndex(index);
+              onPinDragStart?.(index);
+            }}
+            onDragEnd={handleDragEnd}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDropIndex(index === dragIndex ? null : index);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              clearDragState();
+              onPinDropPin?.(index);
+            }}
+          >
+            {pin.iconUrl ? (
+              <img src={resolveIconUrl(pin.iconUrl)} alt={pin.name} />
+            ) : (
+              <span className="pin-fallback">{pin.name.charAt(0).toUpperCase()}</span>
+            )}
+            {showAudioBadge && (
+              <span className="pin-audio-badge" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M3 9v6h4l5 5V4L7 9H3z" />
+                  <path d="M16.5 12A4.5 4.5 0 0 0 14 7.97v8.05A4.5 4.5 0 0 0 16.5 12z" />
+                </svg>
+              </span>
+            )}
+          </button>
+        );
+      })}
 
       <div className="strip-spacer" />
 

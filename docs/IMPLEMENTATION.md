@@ -114,6 +114,7 @@ flowchart TB
 | **Content scripts (every subframe)** | |
 | `src/content/frameScrollGuard.ts` | Pinned-origin frames get `overscroll-behavior: contain` |
 | `src/content/frameDiagnostics.ts` | Pinned-origin frames: boot signal (`panelFrameBooted`), partitioned-SW cleanup; all frames: DEBUG diagnostics |
+| `src/content/frameAudio.ts` | Pinned-origin panel frames: `postMessage` to the parent when `<audio>`/`<video>` starts or stops being audible; the sidebar badges hidden pins that are playing |
 | **Shared library** | |
 | `src/lib/types.ts` | `Pin`, `Settings`, `StorageData`, `PinFormState` |
 | `src/lib/defaults.ts` | `BROWSER_SIDEBAR_DEFAULTS` (layout limits, default pins/settings), `browserSidebarClamp`, `browserSidebarGetDefaultStorageData` |
@@ -133,6 +134,7 @@ flowchart TB
 | `main.tsx` | top only (`all_frames: false`; also self-guards `window.top !== window.self`) | `document_start` | Sidebar UI |
 | `frameScrollGuard.ts` | all | `document_idle` | Scroll isolation for pinned embeds |
 | `frameDiagnostics.ts` | all | `document_start` | Boot signal, SW partition cleanup, diagnostics |
+| `frameAudio.ts` | all (reports only from direct children of top) | `document_start` | Audio-playing badge on hidden pins |
 
 ---
 
@@ -414,6 +416,7 @@ All messages use `chrome.runtime.sendMessage` / `chrome.tabs.sendMessage` with a
 | `ensureEmbedRules` | sidebar | Navigation gate: resolve once DNR rules + cookies are committed |
 | `repairEmbedPartition` | sidebar | Global SW + cache wipe (Layer 4) |
 | `shouldGuardScroll` | `frameScrollGuard` | Is this frame a pinned origin? |
+| `shouldReportAudio` | `frameAudio` | Is this frame a pinned origin? |
 | `shouldManageServiceWorkers` | `frameDiagnostics` | Is this frame a pinned origin? |
 | `panelFrameBooted` | `frameDiagnostics` | Boot signal; relayed to the frame's tab |
 

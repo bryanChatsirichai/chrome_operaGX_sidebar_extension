@@ -251,7 +251,15 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
       }
       const hostname = new URL(details.url).hostname.replace(/^www\./, '');
       const { pins: pinned } = (await chrome.storage.sync.get('pins')) as { pins?: Pin[] };
-      if (!browserSidebarGetPinHostnames(pinned ?? []).includes(hostname)) {
+      // A panel frame can also be blocked on a host that is not pinned: a
+      // pinned site's "Log in" navigates the frame to its auth domain (e.g.
+      // chatgpt.com -> auth.openai.com), whose framing headers are not
+      // stripped. Forward header blocks on direct children of the page too;
+      // the sidebar matches them to its own frames by frameId.
+      const isPinnedHost = browserSidebarGetPinHostnames(pinned ?? []).includes(hostname);
+      const isBlockedTopLevelChild =
+        details.parentFrameId === 0 && /ERR_BLOCKED_BY_(RESPONSE|CSP)/.test(details.error);
+      if (!isPinnedHost && !isBlockedTopLevelChild) {
         return;
       }
       await chrome.tabs.sendMessage(details.tabId, {
@@ -266,6 +274,36 @@ chrome.webRequest.onErrorOccurred.addListener((details) => {
   })();
 },
 { urls: ['<all_urls>'] });
+
+// Some sign-in providers refuse a framed request with an ordinary error page
+// instead of a framing block (accounts.google.com serves "403. That's an
+// error."), so onErrorOccurred never fires. Forward HTTP errors on non-pinned
+// direct children of the page; the sidebar acts only when the frameId is one
+// of its own panel frames. Pinned hosts are skipped so their error statuses
+// stay with the existing embed verification.
+chrome.webRequest.onCompleted.addListener((details) => {
+  if (details.parentFrameId !== 0 || details.statusCode < 400 || details.tabId < 0) {
+    return;
+  }
+  void (async () => {
+    try {
+      const hostname = new URL(details.url).hostname.replace(/^www\./, '');
+      const { pins: pinned } = (await chrome.storage.sync.get('pins')) as { pins?: Pin[] };
+      if (browserSidebarGetPinHostnames(pinned ?? []).includes(hostname)) {
+        return;
+      }
+      await chrome.tabs.sendMessage(details.tabId, {
+        action: 'embedSubFrameFailed',
+        url: details.url,
+        error: `HTTP ${details.statusCode}`,
+        frameId: details.frameId
+      });
+    } catch {
+      // No content script in that tab — nothing to notify.
+    }
+  })();
+},
+{ urls: ['<all_urls>'], types: ['sub_frame'] });
 
 // --- Runtime message handlers ---
 
@@ -291,6 +329,7 @@ chrome.tabs.onZoomChange.addListener((change) => {
  *   repairEmbedPartition        user/auto-invoked SW + cache wipe (see below)
  *   ensureEmbedRules            gate: DNR rules are installed before panel navigation
  *   shouldGuardScroll           frameScrollGuard: is this frame a pinned origin?
+ *   shouldReportAudio           frameAudio: is this frame a pinned origin?
  *   shouldManageServiceWorkers  frameDiagnostics: is this frame a pinned origin?
  *   panelFrameBooted            frameDiagnostics boot signal, forwarded to the tab
  *   getStorageData / resetStorage
@@ -300,7 +339,16 @@ chrome.tabs.onZoomChange.addListener((change) => {
  */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'openTab' && message.url) {
-    chrome.tabs.create({ url: message.url });
+    // Open beside the tab the panel lives in (same window, next position)
+    // rather than at the end of whichever window was focused last.
+    const sourceTab = sender.tab;
+    chrome.tabs.create({
+      url: message.url,
+      active: true,
+      windowId: sourceTab?.windowId,
+      index: sourceTab ? sourceTab.index + 1 : undefined,
+      openerTabId: sourceTab?.id
+    });
     sendResponse({ ok: true });
     return false;
   }
@@ -412,6 +460,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // origin belongs to a pinned site — those embeds get scroll isolation
     // (overscroll-behavior: contain) so scrolling inside the panel never
     // chains to the host page.
+    void browserSidebarSenderOriginIsPinned(sender).then((isPinned) =>
+      sendResponse({ ok: isPinned })
+    );
+    return true;
+  }
+
+  if (message.action === 'shouldReportAudio') {
+    // Sub-frame audio reporter (frameAudio.ts): only pinned-origin frames
+    // post audio state to their parent, so unrelated iframes on normal pages
+    // never send the host page unexpected messages.
     void browserSidebarSenderOriginIsPinned(sender).then((isPinned) =>
       sendResponse({ ok: isPinned })
     );

@@ -1,3 +1,4 @@
+import { DEFAULT_THEME_ID } from './themes';
 import type { Pin, Settings, StorageData } from './types';
 
 const DEFAULT_PANEL_WIDTH = 600;
@@ -66,7 +67,7 @@ export const BROWSER_SIDEBAR_DEFAULTS = {
 
   DEFAULT_SETTINGS: {
     panelWidth: DEFAULT_PANEL_WIDTH,
-    theme: 'dark'
+    theme: DEFAULT_THEME_ID
   } satisfies Settings
 } as const;
 
