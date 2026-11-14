@@ -35,7 +35,7 @@ $browser-sidebar-text-white: #fff;
     display: none;
   }
 
-  /* Live resize gesture: no width transitions, no text selection. */
+  // Live resize gesture: no width transitions, no text selection.
   .sidebar-root.resizing * {
     transition: none;
   }
@@ -116,9 +116,9 @@ $browser-sidebar-text-white: #fff;
     opacity: 0.4;
   }
 
-  /* Drop-target insertion indicator: 2px line on the top edge, sitting in
-     the strip's 4px gap. Uses ::after so it never collides with the active
-     pin's ::before accent bar. */
+  // Drop-target insertion indicator: 2px line on the top edge, sitting in
+  // the strip's 4px gap. Uses ::after so it never collides with the active
+  // pin's ::before accent bar.
   .pin-button.drop-target::after {
     content: '';
     position: absolute;
@@ -143,7 +143,7 @@ $browser-sidebar-text-white: #fff;
     font-weight: 600;
   }
 
-  /* Speaker badge on a hidden pin whose frame is playing audio. */
+  // Speaker badge on a hidden pin whose frame is playing audio.
   .pin-audio-badge {
     position: absolute;
     right: 0;
@@ -678,8 +678,8 @@ $browser-sidebar-text-white: #fff;
     overflow: hidden;
   }
 
-  /* Multiple per-pin frames stay stacked in the panel body (warm frames +
-     preloaded frames are mounted alongside the active one). */
+  // Multiple per-pin frames stay stacked in the panel body (warm frames +
+  // preloaded frames are mounted alongside the active one).
   .panel-iframe {
     position: absolute;
     inset: 0;
@@ -689,18 +689,18 @@ $browser-sidebar-text-white: #fff;
     background: #fff;
   }
 
-  /* NEVER display:none — hidden frames still load/boot (warm reuse, hover
-     preload), and display:none freezes the frame's rAF/CSS animations,
-     which breaks sites that generate values from animation frames at load
-     time (x.com's x-client-transaction-id). Fully transparent instead;
-     the active frame sits on top via source order + the loading overlay. */
+  // NEVER display:none — hidden frames still load/boot (warm reuse, hover
+  // preload), and display:none freezes the frame's rAF/CSS animations,
+  // which breaks sites that generate values from animation frames at load
+  // time (x.com's x-client-transaction-id). Fully transparent instead;
+  // the active frame sits on top via source order + the loading overlay.
   .panel-iframe.hidden {
     opacity: 0;
     pointer-events: none;
   }
 
-  /* Live resize gesture: the frame is width-locked (JS sets inline
-     width) and must not eat pointer events while dragging. */
+  // Live resize gesture: the frame is width-locked (JS sets inline
+  // width) and must not eat pointer events while dragging.
   .sidebar-root.resizing .panel-iframe {
     pointer-events: none;
   }
