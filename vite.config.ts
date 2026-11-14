@@ -10,6 +10,10 @@ export default defineConfig({
     modules: {
       // Preserve original class names so shadow DOM HTML matches SCSS selectors.
       generateScopedName: '[local]'
+    },
+    preprocessorOptions: {
+      // Use Sass's modern compiler API; the legacy JS API is deprecated.
+      scss: { api: 'modern-compiler' }
     }
   },
   build: {
