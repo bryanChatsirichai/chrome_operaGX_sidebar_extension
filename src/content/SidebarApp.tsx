@@ -229,6 +229,10 @@ export function SidebarApp({
   // cross-origin frames — cleared for a pin's origin right before a fresh
   // navigation so a blocked retry can't inherit a stale success signal.
   const bootedOriginsRef = useRef<Set<string>>(new Set());
+  // frameId -> origin of the pinned page that booted in it. A frameId stays
+  // the same when the frame navigates elsewhere, so a later block on another
+  // host can be traced back to the panel frame (and pin) it happened in.
+  const panelFrameOriginsRef = useRef<Map<number, string>>(new Map());
   // Last successful DNR embed-rules assert: signature + timestamp of the
   // pinned-url set it was asserted for. Lets ensureEmbedRulesReady skip the
   // background roundtrip within EMBED_RULES_CACHE_TTL_MS (rules persist for
@@ -538,6 +542,28 @@ export function SidebarApp({
       showFallbackUI(pin);
     },
     [clearIframeTimer, clearIframeVerifyTimer, clearIframeWatchdog, collectIframeDiagnostics, evictWarmFrame, showFallbackUI]
+  );
+
+  /**
+   * The active pin's frame navigated off the pinned site to a page that
+   * refused the frame (typically a sign-in page: framing headers, or an
+   * error page such as Google's 403). Unlike handleEmbedFailure there is no
+   * auto-repair: the pinned site itself embeds fine, so a service-worker
+   * wipe would not help.
+   */
+  const handleOffSiteBlocked = useCallback(
+    (pin: Pin, url: string) => {
+      console.warn('[browser-sidebar] Panel frame left the pinned site and was blocked:', {
+        pin: pin.name,
+        url
+      });
+      embedFailureHandledRef.current = true;
+      iframeVerifyGenerationRef.current += 1;
+      evictWarmFrame(pin.id);
+      clearIframeVerifyTimer();
+      showFallbackUI(pin);
+    },
+    [clearIframeVerifyTimer, evictWarmFrame, showFallbackUI]
   );
 
   /**
@@ -1580,6 +1606,20 @@ export function SidebarApp({
             affectedPin,
             `background net failure: ${message.error} (${message.url})`
           );
+        } else if (!affectedPin && typeof message.frameId === 'number') {
+          // Blocked on a non-pinned host: only ours if this frameId earlier
+          // booted the active pin's page (see panelFrameOriginsRef).
+          const activePin = pinsRef.current.find((pin) => pin.id === activePinIdRef.current);
+          const frameOrigin = panelFrameOriginsRef.current.get(message.frameId);
+          if (
+            activePin &&
+            frameOrigin !== undefined &&
+            frameOrigin === getUrlOrigin(activePin.url) &&
+            panelOpenRef.current &&
+            !embedFailureHandledRef.current
+          ) {
+            handleOffSiteBlocked(activePin, message.url);
+          }
         }
       }
 
@@ -1589,6 +1629,9 @@ export function SidebarApp({
         const origin = getUrlOrigin(message.url);
         if (origin) {
           bootedOriginsRef.current.add(origin);
+          if (typeof message.frameId === 'number') {
+            panelFrameOriginsRef.current.set(message.frameId, origin);
+          }
           console.log('[browser-sidebar] Frame booted (scripts running):', origin);
         }
       }
@@ -1671,7 +1714,7 @@ export function SidebarApp({
 
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [closePanel, openPanelForPin, panelWidth, sidebarHidden, updateWarmFrames]);
+  }, [closePanel, handleOffSiteBlocked, openPanelForPin, panelWidth, sidebarHidden, updateWarmFrames]);
 
   // Keep the single iframeRef pointed at the ACTIVE pin's frame element —
   // verification, diagnostics, and the resize lock all use it.
@@ -1813,9 +1856,15 @@ export function SidebarApp({
           evictWarmFrame(activePin.id);
           void openPanelForPin(activePin);
         }}
-        onOpenInTab={() =>
-          activePin && void browserSidebarSafeSendMessage({ action: 'openTab', url: activePin.url })
-        }
+        onOpenInTab={() => {
+          const pin = fallbackPin ?? activePin;
+          if (!pin) {
+            return;
+          }
+          void browserSidebarSafeSendMessage({ action: 'openTab', url: pin.url });
+          // The user continues in the new tab; the panel's job is done.
+          closePanel();
+        }}
         onIframeLoad={handleIframeLoad}
         onIframeError={handleIframeError}
         onResizeStart={handleResizeStart}

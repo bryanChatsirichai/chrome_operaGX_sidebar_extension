@@ -227,12 +227,31 @@ $browser-sidebar-text-white: #fff;
     border-right: 1px solid $browser-sidebar-border;
     display: flex;
     flex-direction: column;
-    transition: width 0.2s ease;
+    // Closing accelerates out; opening (below) decelerates in.
+    transition: width 0.18s cubic-bezier(0.4, 0, 1, 1);
     contain: layout paint;
   }
 
   .app-panel.open {
     width: var(--browser-sidebar-panel-width, 400px);
+    transition: width 0.22s cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  // Contents keep the full panel width at all times; the animated panel
+  // width only clips them (curtain reveal). If they tracked the panel width,
+  // the embedded site would re-lay out on every animation frame and reflow
+  // from ~0px on each reopen. -1px = the panel's border-right.
+  .app-panel > .panel-header,
+  .app-panel > .panel-body {
+    flex-shrink: 0;
+    width: calc(var(--browser-sidebar-panel-width, 400px) - 1px);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .app-panel,
+    .app-panel.open {
+      transition: none;
+    }
   }
 
   .settings-panel {
@@ -764,6 +783,14 @@ $browser-sidebar-text-white: #fff;
   .fallback-message {
     color: $browser-sidebar-text-muted;
     font-size: 13px;
+    line-height: 1.5;
+    margin: 0;
+    max-width: 280px;
+  }
+
+  .fallback-hint {
+    color: $browser-sidebar-text-dim;
+    font-size: 12px;
     line-height: 1.5;
     margin: 0;
     max-width: 280px;

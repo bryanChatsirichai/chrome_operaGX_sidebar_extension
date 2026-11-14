@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Pin } from '../../lib/types';
 import { resolveIconUrl } from '../../lib/pin-utils';
 import { warmFrameKey, type PanelView, type WarmFrameEntry } from '../SidebarApp';
@@ -48,6 +49,18 @@ export function AppPanel({
 }: AppPanelProps) {
   const displayPin = fallbackPin ?? pin;
 
+  // Keep the last visible frame shown while the panel collapses, so closing
+  // doesn't flash an empty panel. Once closed it is clipped to nothing; any
+  // reopen or view change while open clears it.
+  const livePinId = open && panelView === 'iframe' ? activePinId : null;
+  const [prevLivePinId, setPrevLivePinId] = useState(livePinId);
+  const [closingPinId, setClosingPinId] = useState<string | null>(null);
+  if (livePinId !== prevLivePinId) {
+    setPrevLivePinId(livePinId);
+    setClosingPinId(open ? null : prevLivePinId);
+  }
+  const visiblePinId = livePinId ?? (open ? null : closingPinId);
+
   return (
     <section className={`app-panel${open ? ' open' : ''}`} part="app-panel">
       <header className="panel-header">
@@ -86,7 +99,7 @@ export function AppPanel({
             key={warmFrameKey(entry)}
             ref={(element) => registerFrame(entry.pinId, element)}
             src={entry.src}
-            className={`panel-iframe${entry.pinId === activePinId && panelView === 'iframe' ? '' : ' hidden'}`}
+            className={`panel-iframe${entry.pinId === visiblePinId ? '' : ' hidden'}`}
             sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads"
             title={pin && entry.pinId === pin.id ? pin.name : 'Pinned website'}
             onLoad={() => onIframeLoad(entry.pinId)}
@@ -103,7 +116,10 @@ export function AppPanel({
             )}
           </div>
           <h3 className="fallback-title">{displayPin?.name}</h3>
-          <p className="fallback-message">This site could not load in the panel.</p>
+          <p className="fallback-message">This page can't be shown in the panel.</p>
+          <p className="fallback-hint">
+            Open it in a new tab to continue, for example to sign in.
+          </p>
           <div className="fallback-actions">
             <button className="open-tab-btn" type="button" onClick={onOpenInTab}>
               Open in new tab
