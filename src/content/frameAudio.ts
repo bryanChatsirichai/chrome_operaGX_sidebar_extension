@@ -100,13 +100,21 @@ if (window.top !== window.self && window.parent === window.top) {
     window.addEventListener(type, onMediaEvent, true);
   }
 
+  const stopTracking = () => {
+    for (const type of MEDIA_EVENTS) {
+      window.removeEventListener(type, onMediaEvent, true);
+    }
+    if (recheckTimer !== null) {
+      clearInterval(recheckTimer);
+      recheckTimer = null;
+    }
+  };
+
   chrome.runtime
     .sendMessage({ action: 'shouldReportAudio' })
     .then((response: { ok?: boolean } | undefined) => {
       if (!response?.ok) {
-        for (const type of MEDIA_EVENTS) {
-          window.removeEventListener(type, onMediaEvent, true);
-        }
+        stopTracking();
         return;
       }
       reportingEnabled = true;
@@ -116,5 +124,6 @@ if (window.top !== window.self && window.parent === window.top) {
     })
     .catch(() => {
       // Extension context invalidated (frame outlived an update) — no reports.
+      stopTracking();
     });
 }
