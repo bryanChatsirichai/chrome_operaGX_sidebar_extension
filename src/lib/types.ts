@@ -9,6 +9,15 @@ export interface Pin {
   order: number;
 }
 
+/** `type` of the postMessage a panel frame sends its parent (frameAudio.ts). */
+export const FRAME_AUDIO_MESSAGE_TYPE = 'browser-sidebar:frame-audio';
+
+/** Sent by a pinned panel frame whenever it starts or stops producing sound. */
+export interface FrameAudioMessage {
+  type: typeof FRAME_AUDIO_MESSAGE_TYPE;
+  audible: boolean;
+}
+
 /** User-configurable sidebar preferences. */
 export interface Settings {
   panelWidth: number;

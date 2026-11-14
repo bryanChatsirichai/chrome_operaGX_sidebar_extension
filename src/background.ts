@@ -291,6 +291,7 @@ chrome.tabs.onZoomChange.addListener((change) => {
  *   repairEmbedPartition        user/auto-invoked SW + cache wipe (see below)
  *   ensureEmbedRules            gate: DNR rules are installed before panel navigation
  *   shouldGuardScroll           frameScrollGuard: is this frame a pinned origin?
+ *   shouldReportAudio           frameAudio: is this frame a pinned origin?
  *   shouldManageServiceWorkers  frameDiagnostics: is this frame a pinned origin?
  *   panelFrameBooted            frameDiagnostics boot signal, forwarded to the tab
  *   getStorageData / resetStorage
@@ -412,6 +413,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // origin belongs to a pinned site — those embeds get scroll isolation
     // (overscroll-behavior: contain) so scrolling inside the panel never
     // chains to the host page.
+    void browserSidebarSenderOriginIsPinned(sender).then((isPinned) =>
+      sendResponse({ ok: isPinned })
+    );
+    return true;
+  }
+
+  if (message.action === 'shouldReportAudio') {
+    // Sub-frame audio reporter (frameAudio.ts): only pinned-origin frames
+    // post audio state to their parent, so unrelated iframes on normal pages
+    // never send the host page unexpected messages.
     void browserSidebarSenderOriginIsPinned(sender).then((isPinned) =>
       sendResponse({ ok: isPinned })
     );

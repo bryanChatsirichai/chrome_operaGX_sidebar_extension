@@ -8,7 +8,7 @@ import {
   reindexPins
 } from '../lib/pin-utils';
 import { browserSidebarRuntimeAlive, browserSidebarSafeSendMessage } from './runtimeGuard';
-import type { Pin, PinFormState, Settings } from '../lib/types';
+import { FRAME_AUDIO_MESSAGE_TYPE, type Pin, type PinFormState, type Settings } from '../lib/types';
 import { IconStrip } from './components/IconStrip';
 import { AppPanel } from './components/AppPanel';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -103,6 +103,11 @@ export interface WarmFrameEntry {
   lastUsed: number;
 }
 
+/** Identifies one mounted document: a new src or nav remounts the iframe. */
+export function warmFrameKey(entry: Pick<WarmFrameEntry, 'pinId' | 'src' | 'nav'>): string {
+  return `${entry.pinId}:${entry.src}:${entry.nav}`;
+}
+
 /**
  * How many panel iframes stay mounted (hidden) for instant pin switching.
  * Each warm cross-origin frame is a live renderer process, so this is
@@ -177,6 +182,8 @@ export function SidebarApp({
   const [panelWidth, setPanelWidth] = useState(initialPanelWidth);
   const [panelView, setPanelView] = useState<PanelView>('idle');
   const [warmFrames, setWarmFrames] = useState<WarmFrameEntry[]>([]);
+  /** Keys (warmFrameKey) of mounted frame documents currently producing sound. */
+  const [audibleFrameKeys, setAudibleFrameKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [fallbackPin, setFallbackPin] = useState<Pin | null>(null);
   const [repairInProgress, setRepairInProgress] = useState(false);
   // True once this content script's extension context was invalidated
@@ -1672,6 +1679,66 @@ export function SidebarApp({
     iframeRef.current = frameElementsRef.current.get(activePinId ?? '') ?? null;
   }, [activePinId, warmFrames]);
 
+  // Audio reports from panel frames (frameAudio.ts). The sender is matched by
+  // window identity, not origin, so a message from the host page or from an
+  // unrelated iframe never maps to a pin. Reports are keyed by the frame's
+  // document key, so a frame that unmounts or remounts drops its badge even
+  // though it never got to send "stopped".
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const data: unknown = event.data;
+      if (
+        typeof data !== 'object' ||
+        data === null ||
+        (data as { type?: unknown }).type !== FRAME_AUDIO_MESSAGE_TYPE ||
+        typeof (data as { audible?: unknown }).audible !== 'boolean'
+      ) {
+        return;
+      }
+      const audible = (data as { audible: boolean }).audible;
+
+      let pinId: string | null = null;
+      for (const [id, element] of frameElementsRef.current) {
+        if (element.contentWindow === event.source) {
+          pinId = id;
+          break;
+        }
+      }
+      const entry = pinId === null ? undefined : warmFramesRef.current.find((f) => f.pinId === pinId);
+      if (!entry) {
+        return;
+      }
+
+      const key = warmFrameKey(entry);
+      setAudibleFrameKeys((prev) => {
+        if (prev.has(key) === audible) {
+          return prev;
+        }
+        const next = new Set(prev);
+        if (audible) {
+          next.add(key);
+        } else {
+          next.delete(key);
+        }
+        return next;
+      });
+    };
+
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  useEffect(() => {
+    setAudibleFrameKeys((prev) => {
+      if (prev.size === 0) {
+        return prev;
+      }
+      const mounted = new Set(warmFrames.map(warmFrameKey));
+      const next = new Set([...prev].filter((key) => mounted.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [warmFrames]);
+
   // Watch for extension-context invalidation (extension reloaded/updated
   // while this tab stayed open). Guarded calls already no-op, but the user
   // needs to know the sidebar's messaging is dead until a page refresh.
@@ -1693,6 +1760,9 @@ export function SidebarApp({
   }, [clearPreloadHoverTimer]);
 
   const activePin = getActivePin();
+  const audiblePinIds = new Set(
+    warmFrames.filter((f) => audibleFrameKeys.has(warmFrameKey(f))).map((f) => f.pinId)
+  );
 
   return (
     <div
@@ -1708,6 +1778,7 @@ export function SidebarApp({
       <IconStrip
         pins={pins}
         activePinId={activePinId}
+        audiblePinIds={audiblePinIds}
         settingsOpen={settingsOpen}
         onPinClick={handlePinClick}
         onToggleSettings={toggleSettings}

@@ -1,6 +1,6 @@
 import type { Pin } from '../../lib/types';
 import { resolveIconUrl } from '../../lib/pin-utils';
-import type { PanelView, WarmFrameEntry } from '../SidebarApp';
+import { warmFrameKey, type PanelView, type WarmFrameEntry } from '../SidebarApp';
 
 interface AppPanelProps {
   open: boolean;
@@ -83,7 +83,7 @@ export function AppPanel({
         */}
         {warmFrames.map((entry) => (
           <iframe
-            key={`${entry.pinId}:${entry.src}:${entry.nav}`}
+            key={warmFrameKey(entry)}
             ref={(element) => registerFrame(entry.pinId, element)}
             src={entry.src}
             className={`panel-iframe${entry.pinId === activePinId && panelView === 'iframe' ? '' : ' hidden'}`}

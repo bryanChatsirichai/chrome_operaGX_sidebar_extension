@@ -53,6 +53,12 @@
       "js": ["src/content/frameDiagnostics.ts"],
       "run_at": "document_start",
       "all_frames": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/frameAudio.ts"],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [

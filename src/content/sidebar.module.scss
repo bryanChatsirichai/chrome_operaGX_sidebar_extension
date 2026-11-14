@@ -143,6 +143,28 @@ $browser-sidebar-text-white: #fff;
     font-weight: 600;
   }
 
+  /* Speaker badge on a hidden pin whose frame is playing audio. */
+  .pin-audio-badge {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: $browser-sidebar-accent;
+    color: $browser-sidebar-text-white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 0 2px #000;
+    pointer-events: none;
+  }
+
+  .pin-audio-badge svg {
+    width: 10px;
+    height: 10px;
+  }
+
   .strip-spacer {
     flex: 1;
   }
