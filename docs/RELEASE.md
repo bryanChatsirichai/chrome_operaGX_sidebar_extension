@@ -1,111 +1,60 @@
 # Publishing a release
 
-End users download a pre-built ZIP from [GitHub Releases](https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases). You do not commit `dist/` or ZIP files to git — CI builds them automatically when you push a version tag.
+Users install from a ZIP attached to a [GitHub Release](https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases). CI builds that ZIP when a `v*` tag is pushed. `dist/` and ZIPs are never committed.
+
+## What CI does
+
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on every pushed tag matching `v*`:
+
+1. Checks out the tagged commit and **fails unless that commit is on `origin/main`**.
+2. Runs `npm ci`, `npm run typecheck`, `npm run build` on Node 20.
+3. Reads `version` from **`manifest.json`** and zips the contents of `dist/` (so `manifest.json` is at the ZIP root) as `browser-sidebar-v<version>.zip`.
+4. Creates or updates the GitHub Release for the tag, attaches the ZIP (`overwrite_files: true`), and generates release notes.
+
+There are no tests in the pipeline beyond the typecheck. Run the manual checklist in [IMPLEMENTATION.md § Debugging and testing](IMPLEMENTATION.md#12-debugging-and-testing) first.
+
+**The workflow does not check that the tag matches the manifest version.** A mismatch doesn't fail: you get release `v0.2.5` carrying `browser-sidebar-v0.2.4.zip`. Keeping them in step is on you. `package.json`'s `version` is not used by anything.
 
 ## One-time setup
 
-1. Push this repo to GitHub (already done if you cloned from `origin`).
-2. Ensure **Actions** are enabled: repo **Settings → Actions → General → Allow all actions**.
-3. No secrets required — the workflow uses the built-in `GITHUB_TOKEN` to create releases.
-4. Restrict who can push release tags — import `.github/rulesets/release-tags.json` (see [GITHUB-RULES.md](GITHUB-RULES.md)).
+- **Actions** enabled: **Settings → Actions → General → Allow all actions**. No secrets are needed; the workflow uses `GITHUB_TOKEN` with `contents: write`.
+- Import the tag ruleset so only the owner can push `v*` tags. See [GITHUB-RULES.md](GITHUB-RULES.md).
 
 ## Publish a new version
 
-1. **Bump the version** in `manifest.json` (must match the tag, without the `v` prefix):
-   ```json
-   "version": "0.1.1"
-   ```
-
-2. **Commit and push** to `main`:
+1. On a branch, bump `"version"` in `manifest.json` (e.g. `0.2.5`), merge to `main` via PR.
+2. Tag the merged commit on `main` and push the tag:
    ```bash
-   git add manifest.json
-   git commit -m "Release v0.1.1"
-   git push
+   git checkout main && git pull
+   git tag v0.2.5
+   git push origin v0.2.5
    ```
+3. Watch the **Build and release extension** run in the **Actions** tab (about a minute).
+4. Check [Releases](https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases) for `browser-sidebar-v0.2.5.zip`.
 
-3. **Create and push a tag** on a commit that is on `main` (this triggers the build):
-   ```bash
-   git tag v0.1.1
-   git push origin v0.1.1
-   ```
+Link users to `https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases/latest`. ZIP filenames are versioned, so there is no stable `/latest/download/<file>` URL.
 
-4. **Wait for CI** — open the **Actions** tab on GitHub. The “Build and release extension” workflow should finish in about one minute.
+## Rebuilding an existing version
 
-5. **Verify the release** — open [Releases](https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases). You should see `browser-sidebar-v0.1.1.zip` attached.
+Pushing to `main` does **not** rebuild anything, and **Re-run** in the Actions tab rebuilds the **old** tagged commit. To ship new commits, prefer a patch bump (`0.2.5` → `0.2.6`): no tag rewriting, and users can tell builds apart.
 
-Share this link with users:
-
-```
-https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases/latest
-```
-
-Direct download (after at least one release exists):
-
-```
-https://github.com/bryanChatsirichai/chrome_operaGX_sidebar_extension/releases/latest/download/browser-sidebar-v0.1.1.zip
-```
-
-Replace `0.1.1` with the current version, or use `/releases/latest/download/` only if you always upload a file with the same name (this workflow uses versioned filenames).
-
-## Rebuild same version
-
-Pushing commits to `main` alone does **not** rebuild the ZIP. The workflow only runs when you push a version tag, and it builds **the commit that tag points to** — not necessarily the latest `main`.
-
-Use this when you fixed a bug but want to keep the same version (e.g. still `0.1.0`):
-
-1. **Commit and push** your changes to `main` (leave `manifest.json` version unchanged):
-   ```bash
-   git add .
-   git commit -m "Fix sidebar toggle"
-   git push origin main
-   ```
-
-2. **Delete the existing tag** locally and on GitHub (replace `v0.1.0` with your tag):
-   ```bash
-   git tag -d v0.1.0
-   git push origin :refs/tags/v0.1.0
-   ```
-
-3. **Recreate the tag** on the current commit and push it (this triggers a new build):
-   ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
-   ```
-
-4. **Wait for CI** — check the **Actions** tab. The release ZIP (`browser-sidebar-v0.1.0.zip`) is replaced on the existing **v0.1.0** release.
-
-> **Tip:** For small fixes, bumping the patch version (`0.1.0` → `0.1.1`) is often simpler — no tag deletion, and users can tell which build is newest.
-
-**Does not work:** Re-running a past workflow from the Actions tab rebuilds the **old** commit, not new changes on `main`. Move the tag instead.
-
-## What the workflow does
-
-On every push of a tag matching `v*` (e.g. `v0.1.0`, `v1.2.3`):
-
-1. Checks out the code at that tag
-2. Runs `npm ci`, `npm run typecheck`, and `npm run build`
-3. Zips the contents of `dist/` into `browser-sidebar-v{version}.zip`
-4. Creates a GitHub Release and attaches the ZIP
-
-## Local build (optional)
-
-For testing before you tag:
+If you must keep the same version, move the tag (owner only; the tag ruleset blocks this for everyone else):
 
 ```bash
-npm install
-npm run build
+git tag -d v0.2.5
+git push origin :refs/tags/v0.2.5
+git tag v0.2.5          # on the new commit on main
+git push origin v0.2.5
 ```
 
-Load the `dist/` folder in Chrome via **Load unpacked** at `chrome://extensions`.
+The ZIP on the existing release is replaced. Anyone who already downloaded it has a different build under the same version number.
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| Workflow did not run | Tag must start with `v` and be pushed: `git push origin v0.1.1` |
-| Release failed on permissions | Ensure `permissions: contents: write` is in the workflow (already set) |
-| ZIP missing from release | Check the Actions log for build/typecheck errors |
-| Version mismatch | Tag `v0.1.1` must match `"version": "0.1.1"` in `manifest.json` |
-| New commits on main but same ZIP | Push to `main` does not rebuild — see [Rebuild same version](#rebuild-same-version) |
-| Re-run workflow didn't update ZIP | Re-run uses the old tagged commit — move the tag to the new commit instead |
-| Release failed: not on main | Tag must point to a commit on `main` — merge to main first, then tag |
+| Problem | Cause / fix |
+|---------|-------------|
+| Workflow didn't run | The tag must start with `v` and be pushed (`git push origin <tag>`); pushing commits alone doesn't trigger it |
+| "Release tags must point to a commit on main" | Merge to `main` first, then tag the merged commit |
+| ZIP missing from the release | Typecheck or build failed; read the Actions log |
+| ZIP has the wrong version in its name | `manifest.json` wasn't bumped before tagging. Bump it and re-tag (see above) |
+| Tag push rejected | The tag ruleset allows only the owner to create/move/delete `v*` tags |
