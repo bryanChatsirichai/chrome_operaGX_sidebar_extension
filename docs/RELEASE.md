@@ -11,7 +11,7 @@ Users install from a ZIP attached to a [GitHub Release](https://github.com/bryan
 3. Reads `version` from **`manifest.json`** and zips the contents of `dist/` (so `manifest.json` is at the ZIP root) as `browser-sidebar-v<version>.zip`.
 4. Creates or updates the GitHub Release for the tag, attaches the ZIP (`overwrite_files: true`), and generates release notes.
 
-There are no tests in the pipeline beyond the typecheck. Run the manual checklist in [IMPLEMENTATION.md § Debugging and testing](IMPLEMENTATION.md#12-debugging-and-testing) first.
+There are no tests in the pipeline beyond the typecheck. Run the manual checklist in [IMPLEMENTATION.md: Debugging and testing](IMPLEMENTATION.md#12-debugging-and-testing) first.
 
 **The workflow does not check that the tag matches the manifest version.** A mismatch doesn't fail: you get release `v0.2.5` carrying `browser-sidebar-v0.2.4.zip`. Keeping them in step is on you. `package.json`'s `version` is not used by anything.
 

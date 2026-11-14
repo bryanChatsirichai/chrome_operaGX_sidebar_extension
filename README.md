@@ -81,7 +81,7 @@ npm run build      # production build to dist/
 npm run typecheck  # tsc --noEmit
 ```
 
-Load `dist/` with **Load unpacked** at `chrome://extensions`, and click **Reload** on the extension card after each rebuild. There is no automated test suite in `npm` scripts; see [IMPLEMENTATION.md § Debugging and testing](docs/IMPLEMENTATION.md#12-debugging-and-testing).
+Load `dist/` with **Load unpacked** at `chrome://extensions`, and click **Reload** on the extension card after each rebuild. There is no automated test suite in `npm` scripts; see [IMPLEMENTATION.md: Debugging and testing](docs/IMPLEMENTATION.md#12-debugging-and-testing).
 
 | Doc | Read it when you… |
 |-----|-------------------|

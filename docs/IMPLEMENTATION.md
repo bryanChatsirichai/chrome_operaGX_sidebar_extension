@@ -1,6 +1,6 @@
 # browser-sidebar: Implementation Guide
 
-How the extension works, for engineers changing it. Read §1–§3 for orientation, then the section for the area you're touching. §8 (embed pipeline) and §10 (race conditions) explain most of the non-obvious code.
+How the extension works, for engineers changing it. Read sections 1–3 for orientation, then the section for the area you're touching. Sections 8 (embed pipeline) and 10 (race conditions) explain most of the non-obvious code.
 
 **Contents**
 
@@ -36,7 +36,7 @@ browser-sidebar is a **Chrome Manifest V3 extension** that adds an Opera GX–st
 
 ### Why an iframe and not a native sidebar?
 
-Native browser sidebars render apps in **real top-level browsing contexts**, where `X-Frame-Options` / CSP `frame-ancestors` don't apply. Extensions can't create such a context beside the page; they can only inject into pages, open tabs/windows, and rewrite network traffic for hosts they have permission for. So the panel is an `<iframe>`, which is exactly the context sites like X, Instagram and Discord block. Most of the complexity in this repo exists to undo those blocks for pinned domains only, and to detect reliably when that fails (§8).
+Native browser sidebars render apps in **real top-level browsing contexts**, where `X-Frame-Options` / CSP `frame-ancestors` don't apply. Extensions can't create such a context beside the page; they can only inject into pages, open tabs/windows, and rewrite network traffic for hosts they have permission for. So the panel is an `<iframe>`, which is exactly the context sites like X, Instagram and Discord block. Most of the complexity in this repo exists to undo those blocks for pinned domains only, and to detect reliably when that fails (section 8).
 
 ---
 
@@ -126,12 +126,12 @@ flowchart TB
 | `src/lib/themes.ts` | `THEME_PRESETS` (ids + names), `DEFAULT_THEME_ID`, `resolveThemeId` |
 | `src/lib/storage.ts` | `chrome.storage.sync` read/write helpers, first-install seeding, reset |
 | `src/lib/pin-utils.ts` | `resolveIconUrl`, `parsePinUrl`, `getUrlOrigin`, `computePinUrlSignature`, `getCurrentPagePinDefaults`, `reindexPins` |
-| `src/lib/embed-bypass.ts` | Syncs the two `declarativeNetRequest` session rules (§8, layers 1–2) |
-| `src/lib/cookie-auth.ts` | SameSite cookie relaxation + `cookies.onChanged` watcher (§8, layer 3) |
+| `src/lib/embed-bypass.ts` | Syncs the two `declarativeNetRequest` session rules (section 8, layers 1–2) |
+| `src/lib/cookie-auth.ts` | SameSite cookie relaxation + `cookies.onChanged` watcher (section 8, layer 3) |
 | **Other** | |
 | `src/popup/*` | Full-page options page (`options_ui`, opens in a tab). Despite the folder name there is **no toolbar popup**: the toolbar icon toggles the sidebar |
 | `icons/apps/*` | Default pin SVG icons (web-accessible so the content script can load them) |
-| `tests/e2e/*` | Ad-hoc Playwright scripts, see [§12](#e2e-scripts) |
+| `tests/e2e/*` | Ad-hoc Playwright scripts, see [Section 12](#e2e-scripts) |
 | `.github/workflows/release.yml` | Builds and publishes the release ZIP on `v*` tags ([RELEASE.md](RELEASE.md)) |
 | `.github/workflows/pr-review.yml` | Calls an external reusable workflow (`bryanChatsirichai/github_agentic_pr_reviewer`) to post LLM reviews on same-repo PRs |
 
@@ -187,7 +187,7 @@ interface Settings {
 |-----|---------|
 | `pins` | Ordered pin list |
 | `settings` | Panel width, theme |
-| `lastActivePinId` | Last clicked pin (written via `saveLastActivePin`; has no effective reader, see §14) |
+| `lastActivePinId` | Last clicked pin (written via `saveLastActivePin`; has no effective reader, see section 14) |
 | `sidebarHidden` | Strip hidden on all pages |
 
 Panel-open state is **per-tab React state** and is never persisted. `chrome.storage.session` holds nothing: the worker only removes the stale pre-rename keys `gxPanelOpen` / `gxPanelPinId` at start.
@@ -237,7 +237,7 @@ Each preset is a block of CSS custom properties under `[data-theme='<id>']` in `
 
 `themes.ts` holds only ids and display names. Each settings swatch card carries its own `data-theme`, so it previews its preset's real colours without duplicating them in TypeScript.
 
-A theme change goes through the normal `saveAndBroadcast()` path (§7), so every open tab updates. The options page has no theme picker, but it preserves the stored theme when it saves.
+A theme change goes through the normal `saveAndBroadcast()` path (section 7), so every open tab updates. The options page has no theme picker, but it preserves the stored theme when it saves.
 
 ### Page layout
 
@@ -363,7 +363,7 @@ Panel iframes are sandboxed with `allow-scripts allow-same-origin allow-forms al
 ### Fallback view actions
 
 - **Open in new tab** sends `openTab`. The background opens the URL **next to the source tab** (same window, `index + 1`, `openerTabId` set), then the panel closes.
-- **Repair & retry** runs `repairAndRetry`: `repairEmbedPartition`, evict the frame, cold-open again (§8, layer 4).
+- **Repair & retry** runs `repairAndRetry`: `repairEmbedPartition`, evict the frame, cold-open again (section 8, layer 4).
 
 ### Settings
 
@@ -471,7 +471,7 @@ A just-woken worker may still be installing rules when the panel navigates. Ever
 
 ## 9. Message protocol
 
-All messages use `chrome.runtime.sendMessage` / `chrome.tabs.sendMessage` with an `action` field. Async handlers return `true` from `onMessage` and call `sendResponse` later. Content-side sends go through `browserSidebarSafeSendMessage`. (Frame audio is the one exception: it uses `window.postMessage`, see §6.)
+All messages use `chrome.runtime.sendMessage` / `chrome.tabs.sendMessage` with an `action` field. Async handlers return `true` from `onMessage` and call `sendResponse` later. Content-side sends go through `browserSidebarSafeSendMessage`. (Frame audio is the one exception: it uses `window.postMessage`, see section 6.)
 
 **To the background**
 
@@ -501,7 +501,7 @@ The three `should*` origin checks share `browserSidebarSenderOriginIsPinned`, wh
 | `setSidebarHidden` | toolbar click | Show/hide the strip |
 | `pageZoomChanged` | `tabs.onZoomChange` | Update zoom compensation |
 | `panelFrameBooted` | relay | Record the origin (and `frameId`) as booted |
-| `embedSubFrameFailed` | `webRequest.onErrorOccurred` / `onCompleted` | Network-level or HTTP-error embed failure (§8, layer 5) |
+| `embedSubFrameFailed` | `webRequest.onErrorOccurred` / `onCompleted` | Network-level or HTTP-error embed failure (section 8, layer 5) |
 | `netLog` | `webRequest` trace | DEBUG: mirror network traces into the tab console |
 
 **To add an action:** handle it in `background.ts` `onMessage` (return `true` if async), send it via `browserSidebarSafeSendMessage` (or handle it in the `SidebarApp` listener), and add it to these tables and to the protocol comment above the background `onMessage` handler.
@@ -613,7 +613,7 @@ To run one: `npm run build`, `npm install --no-save playwright-core`, edit the h
 - **Add a default pin:** append to `BROWSER_SIDEBAR_DEFAULTS.DEFAULT_PINS` (`src/lib/defaults.ts`) and add an SVG under `icons/apps/`. Existing installs only get it via **Reset to defaults**.
 - **Add a theme:** add `{ id, name }` to `THEME_PRESETS` (`src/lib/themes.ts`) and a matching `[data-theme='<id>']` token block in `sidebar.module.scss`. Use theme tokens, never literal colours, in new styles.
 - **Strip another framing header:** add it to `HEADERS_TO_STRIP` in `src/lib/embed-bypass.ts`. Keep the list conservative: it applies to every pinned domain.
-- **Add a message action:** see the end of [§9](#9-message-protocol).
+- **Add a message action:** see the end of [Section 9](#9-message-protocol).
 - **Change layout sizes:** use the `BROWSER_SIDEBAR_DEFAULTS` constants (both width sliders already read `PANEL_MIN_WIDTH` / `PANEL_MAX_WIDTH`). `page-shift.module.scss` and `sidebar.module.scss` have fallback values for the CSS variables.
 - **Touch the page from the content script:** go through `sidebarUtils.ts`, and call `refreshFixedElementShift()` after any change that affects the page shift.
 - **Add a subframe content script:** gate it on a background `should*` origin check, like the existing three. It will run in every iframe on the web.
