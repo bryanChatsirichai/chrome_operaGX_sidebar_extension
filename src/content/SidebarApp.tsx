@@ -9,6 +9,7 @@ import {
 } from '../lib/pin-utils';
 import { browserSidebarRuntimeAlive, browserSidebarSafeSendMessage } from './runtimeGuard';
 import { FRAME_AUDIO_MESSAGE_TYPE, type Pin, type PinFormState, type Settings } from '../lib/types';
+import { resolveThemeId, type ThemeId } from '../lib/themes';
 import { IconStrip } from './components/IconStrip';
 import { AppPanel } from './components/AppPanel';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -467,6 +468,15 @@ export function SidebarApp({
       void saveAndBroadcast(pins, { ...settings, panelWidth: width }, width);
     },
     [pins, saveAndBroadcast, settings]
+  );
+
+  /** Applies an appearance preset here, then persists and syncs it to every tab. */
+  const changeTheme = useCallback(
+    (theme: ThemeId) => {
+      setSettings((prev) => ({ ...prev, theme }));
+      void saveAndBroadcast(pins, { ...settings, theme }, panelWidth);
+    },
+    [panelWidth, pins, saveAndBroadcast, settings]
   );
 
   // ---------------------------------------------------------------------
@@ -1810,6 +1820,7 @@ export function SidebarApp({
   return (
     <div
       ref={rootRef}
+      data-theme={resolveThemeId(settings.theme)}
       className={`sidebar-root${sidebarHidden ? ' hidden' : ''}${resizeDragging || sliderResizing ? ' resizing' : ''}`}
     >
       {runtimeDead && (
@@ -1876,6 +1887,7 @@ export function SidebarApp({
         open={settingsOpen}
         pins={pins}
         panelWidth={panelWidth}
+        theme={resolveThemeId(settings.theme)}
         editingPinId={editingPinId}
         pinForm={pinForm}
         onClose={() => setSettingsOpen(false)}
@@ -1925,6 +1937,7 @@ export function SidebarApp({
           setPageResizeActive(false);
           commitPanelWidth(width);
         }}
+        onThemeChange={changeTheme}
         onReset={() => void handleReset()}
       />
     </div>

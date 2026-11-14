@@ -1,3 +1,5 @@
+import type { ThemeId } from './themes';
+
 /** A pinned website shown as an icon in the sidebar strip. */
 export interface Pin {
   id: string;
@@ -21,8 +23,8 @@ export interface FrameAudioMessage {
 /** User-configurable sidebar preferences. */
 export interface Settings {
   panelWidth: number;
-  /** Persisted but not yet read by the UI — only the dark theme exists. */
-  theme: string;
+  /** Appearance preset; storage reads normalize it through `resolveThemeId`. */
+  theme: ThemeId;
 }
 
 /** Full persisted extension state in chrome.storage.sync. */
