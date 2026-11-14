@@ -31,9 +31,9 @@ $browser-sidebar-danger-bg: var(--bs-danger-bg);
 
   // Theme tokens. The selector also matches the Settings theme cards, which
   // carry their own data-theme so each card previews its preset's colours.
-  // GX Red is the base (also used when no data-theme is set); the other
+  // Crimson is the base (also used when no data-theme is set); the other
   // presets override only what differs. Text-on-accent colours were chosen
-  // for >= 4.5:1 contrast, except GX Red, which keeps the original colours.
+  // for >= 4.5:1 contrast, except Crimson, which keeps the original colours.
   .sidebar-root,
   [data-theme] {
     color-scheme: dark;

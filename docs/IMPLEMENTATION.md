@@ -177,7 +177,7 @@ interface Pin {
 
 interface Settings {
   panelWidth: number; // 300–1000, default 600
-  theme: ThemeId;     // 'gx-red' | 'ultraviolet' | 'rose-quartz' | 'ocean' | 'toxic' | 'light'
+  theme: ThemeId;     // 'crimson' | 'ultraviolet' | 'rose-quartz' | 'ocean' | 'toxic' | 'light'
 }
 ```
 
@@ -192,7 +192,7 @@ interface Settings {
 
 Panel-open state is **per-tab React state** and is never persisted. `chrome.storage.session` holds nothing: the worker only removes the stale pre-rename keys `gxPanelOpen` / `gxPanelPinId` at start.
 
-**Theme values.** Builds before theme presets stored `theme: 'dark'`. `resolveThemeId()` maps that, and any unknown value, to `gx-red` (the original look). Always read the theme through `resolveThemeId`.
+**Theme values.** Builds before theme presets stored `theme: 'dark'`. `resolveThemeId()` maps that, and any unknown value, to `crimson` (the original look). That includes `gx-red`, the id this preset had before it was renamed. Always read the theme through `resolveThemeId`.
 
 **Defaults** (`src/lib/defaults.ts`)
 
@@ -233,7 +233,7 @@ Panel-open state is **per-tab React state** and is never persisted. `chrome.stor
 
 ### Themes
 
-Each preset is a block of CSS custom properties under `[data-theme='<id>']` in `sidebar.module.scss`. GX Red is the base block, which also applies when no `data-theme` is set. `SidebarApp` sets `data-theme` on `.sidebar-root`. Every colour in the stylesheet resolves to a theme token, so switching presets is a single attribute change.
+Each preset is a block of CSS custom properties under `[data-theme='<id>']` in `sidebar.module.scss`. Crimson is the base block, which also applies when no `data-theme` is set. `SidebarApp` sets `data-theme` on `.sidebar-root`. Every colour in the stylesheet resolves to a theme token, so switching presets is a single attribute change.
 
 `themes.ts` holds only ids and display names. Each settings swatch card carries its own `data-theme`, so it previews its preset's real colours without duplicating them in TypeScript.
 

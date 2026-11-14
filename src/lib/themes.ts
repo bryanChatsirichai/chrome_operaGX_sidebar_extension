@@ -5,7 +5,7 @@
  * render with the exact colours they apply.
  */
 export const THEME_PRESETS = [
-  { id: 'gx-red', name: 'GX Red' },
+  { id: 'crimson', name: 'Crimson' },
   { id: 'ultraviolet', name: 'Ultraviolet' },
   { id: 'rose-quartz', name: 'Rose Quartz' },
   { id: 'ocean', name: 'Ocean' },
@@ -15,7 +15,7 @@ export const THEME_PRESETS = [
 
 export type ThemeId = (typeof THEME_PRESETS)[number]['id'];
 
-export const DEFAULT_THEME_ID: ThemeId = 'gx-red';
+export const DEFAULT_THEME_ID: ThemeId = 'crimson';
 
 /**
  * Maps a stored theme value to a known preset. Older installs stored

@@ -14,7 +14,7 @@ A Chrome extension that adds an Opera GX–style sidebar to any website: a slim 
 - **Resizable panel.** Drag its edge or use the slider in settings; the width syncs across tabs.
 - **Plays nicely with pages.** Page content and sticky bars move clear of the strip, scrolling inside an app never scrolls the page underneath, and the sidebar keeps its size when you zoom the page.
 - **Pin any page in one click.** Edit, reorder and delete pins from settings.
-- **Six colour themes**: GX Red (default), Ultraviolet, Rose Quartz, Ocean, Toxic, and Light.
+- **Six colour themes**: Crimson (default), Ultraviolet, Rose Quartz, Ocean, Toxic, and Light.
 - **Synced.** Pins and preferences follow your Chrome profile across devices.
 
 ## Install
